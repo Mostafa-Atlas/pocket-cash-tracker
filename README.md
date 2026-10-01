@@ -11,13 +11,33 @@ A private physical-cash tracker for PC and mobile. Your currency, your timezone,
 
 ## Screenshots
 
-Sample data from the disposable preview database.
+Fresh captures of the current app, taken on 1 October 2026 with disposable sample data.
 
-![Home — desktop](docs/screenshots/home-desktop.png)
-![Analysis — desktop](docs/screenshots/analysis-desktop.png)
-![Home — mobile](docs/screenshots/home-mobile.png)
+**Desktop overview** — cash in hand, weekly totals, categories, and recent activity, including a backdated expense.
 
-See [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md) for how I captured them with the disposable preview database.
+![Home — desktop overview with sample cash and activity](docs/screenshots/home-desktop.jpg)
+
+**Spending analysis** — daily spending, refunds, category breakdown, and cash over time.
+
+![Analysis — desktop spending charts with sample data](docs/screenshots/analysis-desktop.jpg)
+
+**On your phone** — the overview and expense sheet with a chosen transaction date.
+
+<p>
+  <img src="docs/screenshots/home-mobile.jpg" alt="Mobile home with cash balance, weekly totals, and bottom navigation" width="280">
+  <img src="docs/screenshots/expense-mobile.jpg" alt="Mobile expense sheet with Yesterday selected and balance preview" width="280">
+</p>
+
+<details>
+<summary>Settings and verified backup status</summary>
+
+Categories, tracking start date, currency, timezone, and local/secondary backup status. The secondary destination shown here belongs to the disposable preview.
+
+![Settings — desktop preferences and verified sample backups](docs/screenshots/settings-desktop.jpg)
+
+</details>
+
+See [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md) for the capture setup.
 
 ## Features
 
