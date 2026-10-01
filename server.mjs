@@ -5,11 +5,14 @@ import { fileURLToPath } from 'node:url';
 import { networkInterfaces } from 'node:os';
 import { Store, SESSION_DURATION } from './lib/store.mjs';
 import { UserError, fail, balance, analytics, history, dateKey } from './lib/ledger.mjs';
+import { transactionTime } from './public/domain.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const staticFiles = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+  ['/domain.js', ['domain.js', 'text/javascript; charset=utf-8']],
+  ['/connection.js', ['connection.js', 'text/javascript; charset=utf-8']],
   ['/style.css', ['style.css', 'text/css; charset=utf-8']],
   ['/icon.svg', ['icon.svg', 'image/svg+xml']],
   ['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json']]
@@ -23,8 +26,8 @@ async function readBody(req, limit = 12_000) {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new UserError('Invalid JSON request.'); }
 }
 function cookie(req) { return req.headers.cookie?.split(';').map(s => s.trim()).find(s => s.startsWith('pocket_session='))?.slice(15) || ''; }
-export function createApp({ dataDir = join(root, 'data'), backupDir = join(root, 'backups'), pin, now, allowedHosts = ['localhost', '127.0.0.1'], autoBackup = true } = {}) {
-  const store = new Store(dataDir, backupDir, { pin, now });
+export function createApp({ dataDir = join(root, 'data'), backupDir = join(root, 'backups'), secondaryBackupDir, pin, now, allowedHosts = ['localhost', '127.0.0.1'], autoBackup = true } = {}) {
+  const store = new Store(dataDir, backupDir, { pin, now, secondaryBackupDir });
   const clock = now || (() => Date.now());
   const attempts = new Map();
   const runBackup = () => { try { store.weekly(); store.backupError = null; } catch (error) { store.backupError = 'Automatic backup failed. Check free disk space and folder permissions.'; console.error(store.backupError, error.code || ''); } };
@@ -63,14 +66,16 @@ export function createApp({ dataDir = join(root, 'data'), backupDir = join(root,
         json(200, { authenticated: true, expiresAt: new Date(session.expires).toISOString() }); return;
       }
       fail(store.authenticated(cookie(req)), 'Your session is locked. Enter your PIN to continue.', 401);
+      if (req.method === 'POST' && (url.pathname.startsWith('/api/action/') || url.pathname === '/api/restore')) fail(req.headers['x-pocket-format'] === '2', 'Refresh Pocket to load the current money format before saving.', 409);
       if (url.pathname === '/api/logout' && req.method === 'POST') { store.logout(cookie(req)); res.setHeader('Set-Cookie', 'pocket_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); json(200, { ok: true }); return; }
       const filters = Object.fromEntries(url.searchParams);
       if (url.pathname === '/api/state' && req.method === 'GET') {
-        const state = store.state(); json(200, { revision: state.revision, initialized: state.initialized, currency: state.currency || 'EGP', balance: balance(state), categories: state.categories, subjects: state.subjects, today: dateKey(new Date(clock()).toISOString(), state.timezone || 'Africa/Cairo'), timezone: state.timezone || 'Africa/Cairo' }); return;
+        const state = store.state(); json(200, { revision: state.revision, initialized: state.initialized, currency: state.currency || 'EGP', balance: balance(state), categories: state.categories, subjects: state.subjects, openingDate: state.transactions[0] ? dateKey(transactionTime(state.transactions[0]), state.timezone || 'Africa/Cairo') : null, today: dateKey(new Date(clock()).toISOString(), state.timezone || 'Africa/Cairo'), timezone: state.timezone || 'Africa/Cairo' }); return;
       }
       if (url.pathname === '/api/analytics' && req.method === 'GET') { const s = store.state(); json(200, analytics(s, filters, new Date(clock()).toISOString(), s.timezone || 'Africa/Cairo')); return; }
       if (url.pathname === '/api/history' && req.method === 'GET') { const s = store.state(); json(200, history(s, filters, s.timezone || 'Africa/Cairo')); return; }
       if (url.pathname === '/api/backups' && req.method === 'GET') { json(200, store.backupStatus()); return; }
+      if (url.pathname === '/api/request-status' && req.method === 'GET') { json(200, { result: store.receipt(filters.id) }); return; }
       if (url.pathname === '/api/backup/download' && req.method === 'GET') {
         const backup = store.readBackup(filters.name); res.setHeader('Content-Disposition', `attachment; filename="${filters.name}"`); json(200, backup); return;
       }
@@ -79,11 +84,11 @@ export function createApp({ dataDir = join(root, 'data'), backupDir = join(root,
         const input = await readBody(req, 20_000_000);
         fail(input?.confirmation === 'RESTORE', 'Type RESTORE to confirm replacing the ledger.');
         const backup = input.name ? store.readBackup(input.name) : input.backup;
-        const state = store.restore(backup, input.revision); json(200, { revision: state.revision }); return;
+        const state = store.restore(backup, input.revision, input.requestId); json(200, { revision: state.revision, balance: state.replayed ? state.balance : balance(state) }); return;
       }
       if (url.pathname.startsWith('/api/action/') && req.method === 'POST') {
         const input = await readBody(req); const state = store.update(url.pathname.slice('/api/action/'.length), input);
-        json(200, { revision: state.revision, balance: balance(state) }); return;
+        json(200, { revision: state.revision, balance: state.replayed ? state.balance : balance(state) }); return;
       }
       throw new UserError('Endpoint not found.', 404);
     } catch (error) {
@@ -99,7 +104,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const port = Number(process.env.PORT || 4310);
   const tailscale = Object.entries(networkInterfaces()).filter(([name]) => /tailscale/i.test(name)).flatMap(([, entries]) => entries).find(i => i.family === 'IPv4')?.address;
   const hosts = process.env.POCKET_HOST ? [process.env.POCKET_HOST] : ['127.0.0.1', ...(tailscale ? [tailscale] : [])];
-  const app = createApp({ dataDir: process.env.POCKET_DATA_DIR || join(root, 'data'), backupDir: process.env.POCKET_BACKUP_DIR || join(root, 'backups'), allowedHosts: [...new Set(['localhost', ...hosts])] });
+  const app = createApp({ dataDir: process.env.POCKET_DATA_DIR || join(root, 'data'), backupDir: process.env.POCKET_BACKUP_DIR || join(root, 'backups'), secondaryBackupDir: process.env.POCKET_SECONDARY_BACKUP_DIR, allowedHosts: [...new Set(['localhost', ...hosts])] });
   if (!app.store.authReady) { console.error('Set your PIN first: npm run set-pin (see README.md).'); app.close(); process.exit(1); }
   const servers = hosts.map(host => {
     const server = http.createServer(app.handler); server.requestTimeout = 30_000; server.headersTimeout = 15_000;

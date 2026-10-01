@@ -1,13 +1,13 @@
-# Pocket — offline-first cash tracker
+# Pocket — local cash tracker
 
 [![CI](https://github.com/Mostafa-Atlas/pocket-cash-tracker/actions/workflows/ci.yml/badge.svg)](https://github.com/Mostafa-Atlas/pocket-cash-tracker/actions/workflows/ci.yml)
 ![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen)
 ![Deps](https://img.shields.io/badge/dependencies-0-blue)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
-A private physical-cash tracker for PC and mobile. Your currency, your timezone, Sunday-first weeks. Runs locally with **zero npm dependencies** — just Node.js + SQLite + vanilla HTML/CSS/JS.
+A private physical-cash tracker for PC and mobile. Your currency, your timezone, Sunday-first weeks. Runs locally with **zero runtime npm dependencies** — just Node.js + SQLite + vanilla HTML/CSS/JS.
 
-> **Portfolio note:** I built this to track real cash reliably offline, with correct money math, safe concurrent edits, and restorable backups. No frameworks, no cloud, no tracking.
+> **Portfolio note:** I built this to track real cash reliably on my own PC, with correct money math, safe concurrent edits, and restorable backups. No frameworks, no cloud, no tracking.
 
 ## Screenshots
 
@@ -22,23 +22,23 @@ See [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md) for how I captured them with the 
 ## Features
 
 - Cash in hand, Add Expense / Add Money, period summary, categories, recent activity
-- Choose your currency at first launch (EGP, USD, EUR, GBP, SAR, AED + more); change the label later in Settings
+- Choose your currency at first launch; currency-specific input precision (whole yen, two decimals for EGP/USD, three for dinars); relabel later without silently rounding history
 - Choose your timezone at first launch (auto-detected from your device); day, week and month boundaries follow it, changeable later in Settings
 - Analysis: net spent, refunds, largest category, category breakdown, daily spending, balance over time, lesson subjects
 - History: search + filters (date, category, subject, type), edit / delete / refund with revision-conflict protection
-- Corrections preserve original timestamps; balance corrections are visible adjustments excluded from spending totals
+- Transaction dates: Today, Yesterday, or a chosen date; corrections preserve the original recording timestamp; balance corrections are visible adjustments excluded from spending totals
 - Refunds link to an expense, can be partial, never exceed the expense; counted on return date
 - Categories / lesson subjects: add, rename, archive, delete-only-when-unused
 - PIN auth (salted scrypt hash), 24h HttpOnly SameSite sessions, rate-limited login, same-origin + custom-header mutation guard
-- Backups: automatic weekly (keep 8), manual snapshots, download/upload JSON, checksum-validated restore with pre-restore recovery copy
-- PWA-ready, mobile bottom tabs + bottom-sheet expense form, desktop sidebar + dialog, keyboard + reduced-motion + touch friendly
+- Backups: verified weekly (keep 8), manual snapshots, optional secondary destination, visible backup health, download/upload JSON, validated restore with recovery copy
+- Mobile-friendly manifest, mobile bottom tabs + bottom-sheet expense form, desktop sidebar + dialog, keyboard + reduced-motion + touch friendly
 
 ## Tech stack
 
 - **Runtime:** Node.js 24+ (uses built-in `node:http`, `node:sqlite`, `node:crypto`, `node:test` — that's why Node 24 is required)
 - **Frontend:** plain HTML / CSS / JavaScript + inline SVG charts, no CDN, no frameworks
-- **Storage:** SQLite locally (`data/pocket.sqlite`), money as integer piastres, atomic mutations, chronological non-negative ledger validation
-- **Tests:** `node --test` — 25 tests for ledger math, refunds, auth, HTTP, concurrency, backup/restore, persistence
+- **Storage:** SQLite locally (`data/pocket.sqlite`), money as integer thousandths, with currency-specific input precision, atomic mutations, chronological non-negative ledger validation
+- **Tests:** 42 Node tests for ledger/server/recovery behavior; a Playwright suite runs browser scenarios on desktop and phone-sized Chromium layouts. Playwright is a development dependency only.
 
 ## Architecture
 
@@ -54,9 +54,9 @@ data/pocket.sqlite (ignored by git) + backups/*.json (ignored by git)
 ```
 
 Key decisions:
-- Integer piastres everywhere — no float rounding (covered by a dedicated test with many decimal expenses).
+- Integer thousandths everywhere — exact decimal arithmetic; currency precision is enforced when entering amounts.
 - Server is source of truth; no offline queue that lies about saving.
-- Cairo (`Africa/Cairo`) boundaries, Sunday-first weeks.
+- Configured timezone boundaries, Sunday-first weeks; calendar labels never convert a local date a second time.
 - Listens on loopback + detected Tailscale IPv4 only, never LAN/WAN by default.
 
 ## Quickstart
@@ -77,7 +77,7 @@ Visit http://127.0.0.1:4310, enter your PIN, choose your currency and timezone, 
 | --- | --- |
 | `node server.mjs` / `npm start` | run production server |
 | `node scripts/set-pin.mjs` / `npm run set-pin` | create / recover PIN (invalidates sessions) |
-| `node --test tests/*.test.mjs` / `npm test` | run 25 isolated temp-DB tests |
+| `node --test tests/*.test.mjs` / `npm test` | run isolated temp-DB tests |
 | `npm run check` | JS syntax checks |
 | `node scripts/ui-preview.mjs` / `npm run preview` | disposable browser-testing app on :4311 with test PIN `24682468` |
 
@@ -87,7 +87,7 @@ Visit http://127.0.0.1:4310, enter your PIN, choose your currency and timezone, 
 - **Git** to clone the repository (or download and extract its ZIP from GitHub).
 - **Tailscale on both devices**, signed into the same Tailnet, for phone access.
 
-There are no third-party npm dependencies. **You do not need to run `npm install`.** All fonts, styles, scripts, and icons are served locally. Use `nvm use` / `fnm use` with the included `.nvmrc` if you use a version manager.
+There are no third-party runtime npm dependencies. Browser regression testing has one optional development dependency. **You do not need to run `npm install`.** All fonts, styles, scripts, and icons are served locally. Use `nvm use` / `fnm use` with the included `.nvmrc` if you use a version manager.
 
 ## First-time setup
 
@@ -131,9 +131,23 @@ The PC must stay awake and the server must stay running. By default, Pocket list
 
 Home gives you cash in hand, Add Expense, Add Money, a period summary, categories, and recent activity. Analysis contains the full set of graphs. History supports search and filters; open a record to edit, delete, or refund it. Settings manages categories/subjects, balance corrections, lock, and backups.
 
-Expense/income/refund corrections preserve their original timestamps. Balance corrections create new visible adjustments. An operation that would create a negative balance anywhere in the ledger is rejected. Remove dependent refunds before deleting their expense. Refunds count on the date returned, so a period can have negative net spending if it contains refunds for older purchases. Category and subject labels follow renames; archived items retain their historical association.
+Expense/income/refund corrections preserve their original recording timestamps. Their transaction dates can be corrected separately; History and Analysis use the transaction date. Balance corrections create new visible adjustments. An operation that would create a negative balance anywhere in the ledger is rejected. Remove dependent refunds before deleting their expense. Refunds count on the date returned, so a period can have negative net spending if it contains refunds for older purchases. Category and subject labels follow renames; archived items retain their historical association.
 
-No offline transaction queue is included: a disconnected phone shows an error and does not claim the entry was saved. The server remains the source of truth. Revision checks prevent simultaneous browser edits from overwriting one another. Return to a page or refresh to fetch the latest data; switching back to the browser also checks for changes.
+Pocket works without internet while this PC is reachable. It does not load or save transactions on a disconnected phone; no service worker or offline transaction queue is included. A manifest alone is not offline support. The server remains the source of truth. Revision checks prevent simultaneous browser edits from overwriting one another. Saves use persistent identifiers and receipts, so checking or retrying an unconfirmed save does not create a duplicate. Return to a page or refresh to fetch the latest data; switching back to the browser also checks for changes.
+
+## Transaction dates and connection recovery
+
+Choose Today, Yesterday, or a calendar date when recording an expense, money received, or a refund. Entries cannot be in the future or before the opening balance, and every historical cash balance must remain non-negative. Refunds must follow their original expense. Set the tracking start date during onboarding, or change it under Settings → Your cash when your opening cash was available earlier. Changing that date does not invent additional cash.
+
+The connection indicator checks whether the PC is reachable. Requests time out after ten seconds. Entry drafts and pending saves are kept in this browser tab (session storage), without storing your PIN. An expired session hides the ledger; unlock to recover the draft or check the pending save. Closing the tab can discard its draft, and browser storage policies can limit recovery across refreshes. Explicitly locking clears ordinary drafts; an unconfirmed save is retained so it can be resolved after unlocking.
+
+After a lost response, use **Check / retry save**. Pocket checks the server receipt first, then retries the same identified change if needed. Resolve a pending save before making a different change. After a revision conflict, your entry stays in the form; review it and submit again. These drafts are not a background offline queue and are never automatically submitted.
+
+## Existing data and upgrades
+
+Stop Pocket and refresh or close existing browser tabs before launching this version. The first launch upgrades the old integer-hundredths ledger to integer-thousandths exactly, retaining the PIN, sessions, descriptions, and timestamps. A `before-upgrade` JSON recovery snapshot preserves the original ledger before the conversion. The live database is not converted just by installing or pulling the code. Older browser code is rejected when it tries to save; refresh to load the new format.
+
+Old JSON backups remain restorable and are converted during restoration. Existing fractional legacy JPY records remain visible exactly. New JPY entries require whole yen. Currency relabeling is blocked if existing amounts would require more decimals than the new currency supports. Currency relabeling does not perform exchange-rate conversion.
 
 ## Backups and restore
 
@@ -147,6 +161,17 @@ To restore, choose a saved snapshot or upload a downloaded JSON file in Settings
 
 The `data/`, `backups/`, `.test-data/`, and `artifacts/` directories are ignored by Git. They are not included when you clone the repository. Never commit your live database, downloaded financial backups, or credentials.
 
+## Secondary backups
+
+Optionally configure a second destination before starting Pocket. Choose an external drive or a trusted network share on another device for protection against loss of this PC. A different folder on the same drive does not protect against drive failure.
+
+```powershell
+$env:POCKET_SECONDARY_BACKUP_DIR = "F:\PocketBackups"
+node server.mjs
+```
+
+Or use a Windows share such as `\\your-server\backups\Pocket`. Pocket mirrors new snapshots, validates their checksum and ledger, and retains the latest eight weekly copies at that destination. Manual, pre-restore, and pre-upgrade copies remain separate. If the destination is unavailable, local backups continue; the latest snapshot is retried every minute while Pocket runs and at startup. Older snapshots created during an outage remain available locally. Settings shows the latest local validation result and the secondary copy status. Secondary snapshots contain financial data; protect access to the destination. This feature is off until you configure a path.
+
 ## Optional configuration
 
 Set environment variables before starting the server:
@@ -156,6 +181,7 @@ Set environment variables before starting the server:
 | `PORT` | `4310` | Change the listening port. |
 | `POCKET_DATA_DIR` | Project's `data/` folder | Local database location. |
 | `POCKET_BACKUP_DIR` | Project's `backups/` folder | Portable backup location. |
+| `POCKET_SECONDARY_BACKUP_DIR` | Unset | Optional external-drive/network-share snapshot destination. |
 
 For example, to use another port in PowerShell:
 
@@ -172,9 +198,19 @@ Run `node scripts/set-pin.mjs` (or `npm run set-pin`) on the PC to choose a new 
 
 ## Development and verification
 
-- `node --test tests/ledger.test.mjs tests/server.test.mjs` (or `npm test`): isolated temporary-database tests for ledger, dates, authentication, HTTP, concurrent edits, backup/restore, and persistence.
+- `node --test tests/*.test.mjs` (or `npm test`): isolated temporary-database tests for ledger, dates, authentication, HTTP, concurrent edits, backup/restore, and persistence.
 - `npm run check`: JavaScript syntax checks.
 - `npm run preview`: disposable browser-testing app on http://127.0.0.1:4311 with test PIN `24682468`, isolated `.test-data/`, never touches production.
+
+For browser regression tests only:
+
+```powershell
+npm ci
+npx playwright install chromium
+npm run test:browser
+```
+
+Each browser test creates an isolated temporary ledger and server; production data is never opened. The suite exercises navigation, backdated entries, currency previews, keyboard focus, draft recovery, session expiry, stale revisions, lost responses, restores, and desktop/phone layouts. CI runs both Node and browser tests. These are simulated phone viewports; physical phone/Tailnet connectivity still requires device testing.
 
 Implementation uses Node's built-in HTTP, SQLite, crypto, and test modules, with plain HTML/CSS/JavaScript and SVG. The SQLite module may print an experimental-feature warning in Node 24; it does not prevent startup. Everything needed by the frontend is local, without CDN or font downloads.
 
@@ -182,7 +218,8 @@ Physical phone connectivity requires verification from the phone. Windows/Tailne
 
 ## Roadmap
 
-- [ ] Screenshots + demo GIF in README
+- [x] Screenshots in README
+- [ ] Demo GIF
 - [ ] CSV export / import
 - [ ] Monthly budget targets with progress bar
 - [ ] Light theme toggle

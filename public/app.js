@@ -1,3 +1,5 @@
+import { CURRENCIES, MONEY_SCALE, currencyDigits, parseAmount, formatAmount, transactionTime, calendarLabel, shiftCalendar } from './domain.js';
+import { createRequestClient, saveIdentifier } from './connection.js';
 const $ = selector => document.querySelector(selector);
 const app = $('#app'), modal = $('#modal');
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -30,19 +32,18 @@ const paths = {
   check: '<path d="m5 12 4 4L19 6"/>',
 };
 const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.tag}</svg>`;
-const CURRENCIES = { EGP: 'Egyptian pound', USD: 'US dollar', EUR: 'Euro', GBP: 'British pound', SAR: 'Saudi riyal', AED: 'UAE dirham', KWD: 'Kuwaiti dinar', BHD: 'Bahraini dinar', QAR: 'Qatari riyal', JOD: 'Jordanian dinar', MAD: 'Moroccan dirham', DZD: 'Algerian dinar', TND: 'Tunisian dinar', LYD: 'Libyan dinar', SDG: 'Sudanese pound', TRY: 'Turkish lira', INR: 'Indian rupee', PKR: 'Pakistani rupee', PHP: 'Philippine peso', CAD: 'Canadian dollar', AUD: 'Australian dollar', JPY: 'Japanese yen' };
 const code = () => (state?.currency && CURRENCIES[state.currency] ? state.currency : 'EGP');
 const currencyName = c => CURRENCIES[c] || 'Egyptian pound';
-const amount = cents => new Intl.NumberFormat('en', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(cents / 100);
+const amount = units => formatAmount(units, code());
 const egp = cents => `${amount(cents)} ${code()}`;
-const numeric = cents => (cents / 100).toFixed(2);
-const shortMoney = cents => Math.abs(cents) >= 100000 ? `${(cents / 100000).toFixed(1).replace(/\.0$/, '')}k` : new Intl.NumberFormat('en', { maximumFractionDigits: 0 }).format(cents / 100);
+const numeric = units => formatAmount(units, code(), false);
+const shortMoney = units => Math.abs(units) >= MONEY_SCALE * 1000 ? `${(units / (MONEY_SCALE * 1000)).toFixed(1).replace(/\.0$/, '')}k` : new Intl.NumberFormat('en', { maximumFractionDigits: 0 }).format(units / MONEY_SCALE);
 const TIMEZONES = ['Africa/Cairo', 'Africa/Algiers', 'Africa/Casablanca', 'Africa/Tunis', 'Africa/Nairobi', 'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Asia/Dubai', 'Asia/Riyadh', 'Asia/Qatar', 'Asia/Kuwait', 'Asia/Amman', 'Asia/Istanbul', 'Asia/Karachi', 'Asia/Kolkata', 'Asia/Manila', 'America/New_York', 'America/Toronto', 'Australia/Sydney', 'Pacific/Auckland', 'UTC'];
 const zone = () => (state?.timezone || 'Africa/Cairo');
 const detectedZone = () => { try { const z = Intl.DateTimeFormat().resolvedOptions().timeZone; return z || 'Africa/Cairo'; } catch { return 'Africa/Cairo'; } };
 const zoneOptions = selected => [...new Set([selected, detectedZone(), ...TIMEZONES])].filter(Boolean).map(z => `<option value="${escape(z)}" ${z === selected ? 'selected' : ''}>${escape(z)}</option>`).join('');
 const formatDate = (iso, options = {}) => new Intl.DateTimeFormat('en-GB', { timeZone: zone(), ...options }).format(new Date(iso));
-const dayLabel = key => formatDate(key + 'T12:00:00Z', { day: 'numeric', month: 'short' });
+const dayLabel = key => calendarLabel(key);
 const dateKey = iso => new Intl.DateTimeFormat('en-CA', { timeZone: zone(), year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(iso));
 const time = iso => formatDate(iso, { hour: 'numeric', minute: '2-digit', hour12: true });
 const types = { expense: 'Expense', income: 'Money received', refund: 'Refund', opening: 'Opening balance', adjustment: 'Balance adjustment' };
@@ -51,18 +52,37 @@ let period = 'week', customFrom = '', customTo = '', historyFilters = {}, histor
 let records = new Map(), toastTimer;
 const pages = ['home', 'analysis', 'history', 'settings'];
 
-async function api(path, body) {
-  let response;
-  try { response = await fetch(`/api/${path}`, { method: body === undefined ? 'GET' : 'POST', credentials: 'same-origin', headers: body === undefined ? {} : { 'Content-Type': 'application/json', 'X-Pocket-Request': '1' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }); }
-  catch { throw new Error('Cannot reach your PC. Check that Pocket is running and your Tailnet is connected.'); }
-  let data;
-  try { data = await response.json(); } catch { throw new Error('Could not read the server response. Please refresh.'); }
-  if (!response.ok) {
-    if (response.status === 401 && path !== 'login') { authenticated = false; modal.close(); renderLogin(); }
-    const error = new Error(data.error || 'Something went wrong.'); error.status = response.status; throw error;
-  }
-  return data;
+let connected = null;
+function connectionStatus(ok) {
+  connected = ok;
+  const label = $('#connection-status');
+  if (label) { label.textContent = ok ? 'Connected to PC' : 'PC unreachable'; label.classList.toggle('offline', !ok); }
 }
+const request = createRequestClient({ onConnection: connectionStatus });
+function stored(key) { try { return JSON.parse(sessionStorage.getItem(key) || 'null'); } catch { return null; } }
+function persist(key, value) { try { if (value) sessionStorage.setItem(key, JSON.stringify(value)); else sessionStorage.removeItem(key); } catch { /* A blocked storage policy still allows in-memory recovery. */ } }
+let draft = stored('pocket-entry-draft'), pendingSave = stored('pocket-pending-save');
+let openingDraft = stored('pocket-opening-draft');
+function captureOpeningDraft() {
+  const form = $('#opening'); if (!form || pendingSave) return;
+  openingDraft = Object.fromEntries(new FormData(form)); persist('pocket-opening-draft', openingDraft);
+}
+function captureDraft() {
+  const form = $('#entry-form'); if (!form || pendingSave) return;
+  draft = { action: formContext.action, old: formContext.old, categoryId: formContext.categoryId, values: Object.fromEntries(new FormData(form)) };
+  persist('pocket-entry-draft', draft);
+}
+function clearDraft() { draft = null; openingDraft = null; persist('pocket-entry-draft', null); persist('pocket-opening-draft', null); }
+function savePending(value) { pendingSave = value; persist('pocket-pending-save', value); }
+function pendingNotice() { return pendingSave ? '<div class="error-banner">Your last save is not confirmed. Its draft is kept. <button class="btn small secondary" data-action="retry-save">Check / retry save</button></div>' : ''; }
+async function api(path, body) {
+  try { return await request(path, body); }
+  catch (error) {
+    if (error.status === 401 && path !== 'login') { captureDraft(); authenticated = false; pageToken++; modal.close(); renderLogin('Unlock to recover your draft or check the pending save.'); }
+    throw error;
+  }
+}
+
 function toast(message) { clearTimeout(toastTimer); $('#toast').textContent = message; $('#toast').classList.add('show'); toastTimer = setTimeout(() => $('#toast').classList.remove('show'), 4200); }
 function errorBox(message) { return `<div class="error-banner" role="alert">${escape(message)}</div>`; }
 function empty(title, text, symbol = 'wallet') { return `<div class="empty"><div class="empty-icon">${icon(symbol)}</div><h3>${escape(title)}</h3><p>${escape(text)}</p></div>`; }
@@ -73,20 +93,26 @@ function intro(title, subtitle, filter = false) { return `<div class="page-intro
 function shell(page) {
   currentPage = page;
   const label = { home: 'Overview', analysis: 'Analysis', history: 'History', settings: 'Settings' }[page];
-  app.innerHTML = `<aside class="sidebar"><a class="brand" href="#home"><img src="/icon.svg" alt="">Pocket<span class="sr-only"> home</span></a><p class="brand-sub">Your cash, a little clearer.</p><p class="eyebrow nav-label">Workspace</p><nav class="nav" aria-label="Main navigation">${pages.map(p => `<a href="#${p}" class="${p === page ? 'active' : ''}" ${p === page ? 'aria-current="page"' : ''}>${icon({ home: 'home', analysis: 'chart', history: 'history', settings: 'settings' }[p])}<span>${p[0].toUpperCase() + p.slice(1)}</span></a>`).join('')}</nav><div class="sidebar-bottom"><div class="private-note">${icon('shield')}Just for you.</div><p>Physical cash. One clear picture.</p><button class="btn ghost" data-action="lock">${icon('lock')}Lock Pocket</button></div></aside><div class="workspace"><header class="topbar"><div class="breadcrumb"><span>Pocket</span>${icon('chevron')}<span>${label}</span></div><div class="topbar-right"><span class="date-label">${formatDate(new Date().toISOString(), { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' })}</span><span class="private-label">Personal workspace</span><span class="avatar" aria-label="Personal account">P</span></div></header><main id="main" tabindex="-1"><div class="empty">Loading your cash…</div></main><footer class="page-foot"><span>${icon('shield')}Your data stays on your PC.</span><span>${code()} · ${escape(zone())} · Made for everyday cash</span></footer></div>`;
+  app.innerHTML = `<aside class="sidebar"><a class="brand" href="#home"><img src="/icon.svg" alt="">Pocket<span class="sr-only"> home</span></a><p class="brand-sub">Your cash, a little clearer.</p><p class="eyebrow nav-label">Workspace</p><nav class="nav" aria-label="Main navigation">${pages.map(p => `<a href="#${p}" class="${p === page ? 'active' : ''}" ${p === page ? 'aria-current="page"' : ''}>${icon({ home: 'home', analysis: 'chart', history: 'history', settings: 'settings' }[p])}<span>${p[0].toUpperCase() + p.slice(1)}</span></a>`).join('')}</nav><div class="sidebar-bottom"><div class="private-note">${icon('shield')}Just for you.</div><p>Physical cash. One clear picture.</p><button class="btn ghost" data-action="lock">${icon('lock')}Lock Pocket</button></div></aside><div class="workspace"><header class="topbar"><div class="breadcrumb"><span>Pocket</span>${icon('chevron')}<span>${label}</span></div><div class="topbar-right"><span id="connection-status" class="connection-status" role="status">${connected === false ? 'PC unreachable' : 'Connected to PC'}</span><span class="date-label">${formatDate(new Date().toISOString(), { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' })}</span><span class="private-label">Personal workspace</span><span class="avatar" aria-label="Personal account">P</span></div></header><main id="main" tabindex="-1"><div class="empty">Loading your cash…</div></main><footer class="page-foot"><span>${icon('shield')}Your data stays on your PC.</span><span>${code()} · ${escape(zone())} · Made for everyday cash</span></footer></div>`;
 }
 function renderLogin(message = '') {
   app.innerHTML = `<main id="main" class="auth-page"><div class="auth-card"><div class="brand"><img src="/icon.svg" alt="">Pocket</div><section class="panel auth-panel"><div class="auth-mark">${icon('lock')}</div><h1>A little peace of mind.</h1><p>Your cash, spending, and small everyday decisions. All in one private place.</p><form id="login" class="form-grid"><label class="field"><span>Your PIN</span><input class="pin-input" type="password" name="pin" inputmode="numeric" pattern="[0-9]{4,12}" minlength="4" maxlength="12" autocomplete="current-password" required aria-describedby="login-error" autofocus></label><div id="login-error" class="inline-error" role="alert">${escape(message)}</div><button class="btn full">Unlock Pocket ${icon('arrow')}</button><p class="form-tip">${icon('clock')}This device stays unlocked for 24 hours.</p></form></section><p class="auth-foot">${icon('shield')}Private by design. Yours by default.</p></div></main>`;
   $('#login input')?.focus();
 }
 function renderOpening() {
-  app.innerHTML = `<main id="main" class="auth-page onboarding"><div class="auth-card"><div class="brand"><img src="/icon.svg" alt="">Pocket</div><section class="panel auth-panel"><div class="auth-mark">${icon('wallet')}</div><h1>Start with what's in hand.</h1><p>Choose your currency and timezone, then count the physical cash you have right now. This is your starting point—you can correct it later.</p><form id="opening" class="form-grid"><label class="field"><span>Currency</span><select name="currency" required>${Object.entries(CURRENCIES).map(([c, n]) => `<option value="${c}" ${c === 'EGP' ? 'selected' : ''}>${c} · ${escape(n)}</option>`).join('')}</select></label><label class="field"><span>Timezone</span><select name="timezone" required>${zoneOptions(detectedZone())}</select></label><label class="field"><span>Your current cash</span><div class="amount-input"><input name="amount" type="text" inputmode="decimal" placeholder="0.00" maxlength="10" required autocomplete="off" aria-describedby="opening-error"><span>${code()}</span></div></label><div id="opening-error" class="inline-error" role="alert"></div><button class="btn full">Let's get started ${icon('arrow')}</button><p class="form-tip">${icon('shield')}Just cash. Your bank money stays separate.</p></form></section><p class="auth-foot"><button class="text-button" data-action="lock">${icon('lock')}Lock Pocket</button></p></div></main>`;
+  app.innerHTML = `<main id="main" class="auth-page onboarding"><div class="auth-card"><div class="brand"><img src="/icon.svg" alt="">Pocket</div><section class="panel auth-panel"><div class="auth-mark">${icon('wallet')}</div><h1>Start with what's in hand.</h1><p>Choose your currency and timezone, then count the physical cash you have right now. This is your starting point—you can correct it later.</p><form id="opening" class="form-grid"><label class="field"><span>Currency</span><select name="currency" required>${Object.entries(CURRENCIES).map(([c, n]) => `<option value="${c}" ${c === 'EGP' ? 'selected' : ''}>${c} · ${escape(n)}</option>`).join('')}</select></label><label class="field"><span>Timezone</span><select name="timezone" required>${zoneOptions(detectedZone())}</select></label><label class="field"><span>Your current cash</span><div class="amount-input"><input name="amount" type="text" inputmode="decimal" placeholder="0.00" maxlength="11" required autocomplete="off" aria-describedby="opening-error"><span>${code()}</span></div></label><label class="field"><span>Tracking start date</span><input name="date" type="date" max="${state.today}" value="${state.today}" required></label><div id="opening-error" class="inline-error" role="alert"></div><button class="btn full">Let's get started ${icon('arrow')}</button><p class="form-tip">${icon('shield')}Just cash. Your bank money stays separate.</p></form></section><p class="auth-foot"><button class="text-button" data-action="lock">${icon('lock')}Lock Pocket</button></p></div></main>`;
   $('#opening input')?.focus();
+  const values = pendingSave?.action === 'opening' ? pendingSave.input : openingDraft;
+  for (const [name, value] of Object.entries(values || {})) { const input = $('#opening').elements.namedItem(name); if (input) input.value = value; }
+  state.currency = $('#opening [name=currency]').value; state.timezone = $('#opening [name=timezone]').value;
+  state.today = dateKey(new Date().toISOString()); $('#opening [name=date]').max = state.today;
+  $('#opening .amount-input > span').textContent = code();
+  $('#opening').insertAdjacentHTML('beforebegin', pendingNotice()); freezePendingForm();
 }
 function transactionTitle(t) { return t.type === 'expense' ? (t.subject || t.category) : types[t.type]; }
 function transactionRows(rows) {
   rows.forEach(t => records.set(t.id, t));
-  return `<div class="transactions">${rows.map(t => `<button class="tx" data-action="detail" data-id="${t.id}" aria-label="${escape(`${transactionTitle(t)}, ${egp(t.amount)}, ${types[t.type]}, ${dayLabel(dateKey(t.createdAt))}`)}"><span class="tx-icon" style="--tx-color:${t.color}">${icon(t.type === 'refund' ? 'restore' : t.icon)}</span><span class="tx-copy"><span class="tx-title">${escape(transactionTitle(t))}</span><span class="tx-meta" style="display:block">${escape(t.description || (t.subject ? `${t.category} · ${t.subject}` : types[t.type]))}</span></span><span class="tx-right"><span class="tx-amount ${t.effect >= 0 ? 'positive' : ''}">${t.effect >= 0 ? '+' : '−'}${amount(Math.abs(t.effect))}<small>${code()}</small></span><span class="tx-meta" style="display:block">${dayLabel(dateKey(t.createdAt))} · ${time(t.createdAt)}</span></span></button>`).join('')}</div>`;
+  return `<div class="transactions">${rows.map(t => `<button class="tx" data-action="detail" data-id="${t.id}" aria-label="${escape(`${transactionTitle(t)}, ${egp(t.amount)}, ${types[t.type]}, ${dayLabel(dateKey(transactionTime(t)))}`)}"><span class="tx-icon" style="--tx-color:${t.color}">${icon(t.type === 'refund' ? 'restore' : t.icon)}</span><span class="tx-copy"><span class="tx-title">${escape(transactionTitle(t))}</span><span class="tx-meta" style="display:block">${escape(t.description || (t.subject ? `${t.category} · ${t.subject}` : types[t.type]))}</span></span><span class="tx-right"><span class="tx-amount ${t.effect >= 0 ? 'positive' : ''}">${t.effect >= 0 ? '+' : '−'}${amount(Math.abs(t.effect))}<small>${code()}</small></span><span class="tx-meta" style="display:block">${dayLabel(dateKey(transactionTime(t)))}${transactionTime(t) === t.createdAt ? ' · ' + time(t.createdAt) : ' · Recorded later'}</span></span></button>`).join('')}</div>`;
 }
 function categoryChart(a, compact = false) {
   if (!a.categories.length) return empty('A clearer picture starts here', 'Add your first expense to see where your cash goes.', 'chart');
@@ -100,13 +126,13 @@ function chart(data, name, line = false, monthly = false) {
   const mobile = matchMedia('(max-width:640px)').matches;
   const width = mobile ? Math.max(240, innerWidth - 90) : 640, height = mobile ? 210 : 230, left = 42, right = 16, top = 19, bottom = 38;
   const plotWidth = width - left - right, plotHeight = height - top - bottom;
-  const vals = data.map(p => p.amount); let min = Math.min(0, ...vals), max = Math.max(100, ...vals);
-  if (min === max) max = min + 100;
+  const vals = data.map(p => p.amount); let min = Math.min(0, ...vals), max = Math.max(MONEY_SCALE, ...vals);
+  if (min === max) max = min + MONEY_SCALE;
   const y = value => top + (max - value) / (max - min) * plotHeight;
   const x = i => left + plotWidth * (i + .5) / data.length;
   const base = y(0), step = Math.max(1, Math.ceil(data.length / (mobile ? 4 : 7)));
   const grid = [0, 1, 2, 3].map(i => { const v = min + (max - min) * i / 3; return `<line x1="${left}" x2="${width - right}" y1="${y(v)}" y2="${y(v)}" class="gridline"/><text x="${left - 9}" y="${y(v) + 4}" text-anchor="end">${shortMoney(v)}</text>`; }).join('');
-  const axisLabels = data.map((d, i) => i % step === 0 || i === data.length - 1 && data.length < 9 ? `<text x="${x(i)}" y="${height - 10}" text-anchor="middle">${monthly ? formatDate(d.date + 'T12:00:00Z', { month: 'short', year: '2-digit' }) : dayLabel(d.date)}</text>` : '').join('');
+  const axisLabels = data.map((d, i) => i % step === 0 || i === data.length - 1 && data.length < 9 ? `<text x="${x(i)}" y="${height - 10}" text-anchor="middle">${monthly ? calendarLabel(d.date, { month: 'short', year: '2-digit' }) : dayLabel(d.date)}</text>` : '').join('');
   const points = data.map((d, i) => `${x(i)},${y(d.amount)}`).join(' ');
   const graph = line ? `<polygon points="${x(0)},${base} ${points} ${x(data.length - 1)},${base}" fill="#83e3ca" opacity=".07"/><polyline points="${points}" fill="none" stroke="#83e3ca" stroke-width="2.5" stroke-linejoin="round"/>${data.map((d, i) => `<circle cx="${x(i)}" cy="${y(d.amount)}" r="${data.length > 45 ? 1.5 : 3}" fill="#a9f0da"><title>${dayLabel(d.date)}: ${egp(d.amount)}</title></circle>`).join('')}` : data.map((d, i) => `<rect x="${x(i) - Math.min(34, plotWidth / data.length * .5) / 2}" y="${Math.min(base, y(d.amount))}" width="${Math.min(34, plotWidth / data.length * .5)}" height="${Math.max(d.amount === 0 ? 0 : 2, Math.abs(base - y(d.amount)))}" rx="3" fill="${d.amount >= 0 ? '#83d6ba' : '#a6bdfa'}"><title>${dayLabel(d.date)}: ${egp(d.amount)}</title></rect>`).join('');
   return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escape(name)}. ${data.length} ${monthly ? 'months' : 'days'}; values available below.">${grid}${graph}${axisLabels}</svg><details class="chart-access"><summary>View chart values · ${code()}</summary><div class="chart-data-scroll"><table><thead><tr><th>${monthly ? 'Month' : 'Date'}</th><th>${escape(name)}</th></tr></thead><tbody>${data.map(d => `<tr><td>${monthly ? escape(d.date.slice(0, 7)) : dayLabel(d.date)}</td><td>${egp(d.amount)}</td></tr>`).join('')}</tbody></table></div></details>`;
@@ -115,7 +141,7 @@ function renderHome(a, recent) {
   $('#main').innerHTML = `${intro('Your money, at a glance.', 'A little awareness goes a long way.', true)}<div class="overview-grid"><section class="panel balance-card"><div class="balance-top"><span>Your available cash</span><span class="balance-icon">${icon('wallet')}</span></div><div class="balance-amount">${amount(state.balance)}<small>${code()}</small></div><p class="balance-caption">The cash you have in hand, right now.</p><div class="balance-actions"><button class="btn" data-action="expense">${icon('plus')}Add Expense</button><button class="btn secondary" data-action="income">${icon('plus')}Add Money</button></div></section><section class="panel week-summary"><div class="week-head"><h2>${escape(a.range.label)}</h2><span>${period === 'all' ? 'Your full history' : `${dayLabel(a.range.from)} – ${dayLabel(a.range.to)}`}</span></div><div class="stat-line"><div class="stat-label"><span class="stat-icon">${icon('up')}</span>Net spent</div><div class="stat-value">${amount(a.spent)}<small>${code()}</small></div></div><div class="stat-line"><div class="stat-label"><span class="stat-icon in">${icon('down')}</span>Money received</div><div class="stat-value">${amount(a.income)}<small>${code()}</small></div></div><p class="week-foot">${a.count} expense${a.count === 1 ? '' : 's'} recorded${a.refunds ? ` · ${egp(a.refunds)} refunded` : ' · One entry at a time.'}</p></section></div><div class="lower-grid"><section class="panel"><div class="panel-head"><div><h2>Where it goes</h2><p>Your spending by category</p></div><a class="text-button" href="#analysis" aria-label="See spending analysis">${icon('arrow')}</a></div>${categoryChart(a, true)}${a.biggest ? `<p class="caption"><strong>${escape(a.biggest.name)}</strong> is your biggest spending category this period.</p>` : ''}</section><section class="panel"><div class="panel-head"><div><h2>Recent activity</h2><p>The little things, all accounted for.</p></div><a class="text-button" href="#history">View all ${icon('arrow')}</a></div>${recent.rows.length ? transactionRows(recent.rows.slice(0, 5)) : empty('Your story starts with your first entry', 'Add money received or something you spent to see it here.', 'history')}</section></div>`;
 }
 function renderAnalysis(a) {
-  $('#main').innerHTML = `${intro('Make sense of your spending.', 'Small details. A much clearer picture.', true)}<div class="stats-grid"><section class="panel metric"><span class="eyebrow">Net spent</span><strong>${amount(a.spent)} <small>${code()}</small></strong><p>Expenses minus refunds</p></section><section class="panel metric"><span class="eyebrow">Expenses</span><strong>${amount(a.gross)} <small>${code()}</small></strong><p>${a.count} expense${a.count === 1 ? '' : 's'} in this period</p></section><section class="panel metric"><span class="eyebrow">Refunds</span><strong>${amount(a.refunds)} <small>${code()}</small></strong><p>Cash returned in this period</p></section><section class="panel metric"><span class="eyebrow">Top category</span><strong>${escape(a.biggest?.name || '—')}</strong><p>${a.biggest ? egp(a.biggest.amount) + ' net spent' : 'No spending yet'}</p></section></div><div class="charts-grid"><section class="panel"><div class="panel-head"><div><h2>${a.monthly ? 'Monthly' : 'Daily'} spending</h2><p>When your cash goes out—and comes back</p></div><span class="pill">${code()}</span></div>${a.count || a.refunds ? chart(a.daily, 'Net spending', false, a.monthly) : empty('No spending recorded', 'Your spending pattern will appear as you add expenses.', 'chart')}</section><section class="panel"><div class="panel-head"><div><h2>Spending by category</h2><p>Every category has its place</p></div></div>${categoryChart(a)}</section><section class="panel"><div class="panel-head"><div><h2>Your cash over time</h2><p>Closing balance ${a.monthly ? 'each month' : 'each day'} · includes balance corrections</p></div></div>${chart(a.cash, 'Cash balance', true, a.monthly)}</section><section class="panel"><div class="panel-head"><div><h2>A closer look at lessons</h2><p>Net spending across your subjects</p></div>${icon('book')}</div>${a.subjects.length ? `<div class="category-list">${a.subjects.map(s => `<div><div class="category-line"><span>${escape(s.name)}</span><span>${egp(s.amount)}</span></div><div class="meter"><span style="width:${Math.max(0, s.amount / Math.max(1, ...a.subjects.map(x => x.amount)) * 100)}%;background:#ac9af7"></span></div></div>`).join('')}</div>` : empty('A little more detail', 'Choose a subject when recording a lesson to see its spending here.', 'book')}</section></div><p class="caption">Refunds count on the day the cash was returned. Balance adjustments and opening cash are excluded from spending. All dates use Cairo time.</p>`;
+  $('#main').innerHTML = `${intro('Make sense of your spending.', 'Small details. A much clearer picture.', true)}<div class="stats-grid"><section class="panel metric"><span class="eyebrow">Net spent</span><strong>${amount(a.spent)} <small>${code()}</small></strong><p>Expenses minus refunds</p></section><section class="panel metric"><span class="eyebrow">Expenses</span><strong>${amount(a.gross)} <small>${code()}</small></strong><p>${a.count} expense${a.count === 1 ? '' : 's'} in this period</p></section><section class="panel metric"><span class="eyebrow">Refunds</span><strong>${amount(a.refunds)} <small>${code()}</small></strong><p>Cash returned in this period</p></section><section class="panel metric"><span class="eyebrow">Top category</span><strong>${escape(a.biggest?.name || '—')}</strong><p>${a.biggest ? egp(a.biggest.amount) + ' net spent' : 'No spending yet'}</p></section></div><div class="charts-grid"><section class="panel"><div class="panel-head"><div><h2>${a.monthly ? 'Monthly' : 'Daily'} spending</h2><p>When your cash goes out—and comes back</p></div><span class="pill">${code()}</span></div>${a.count || a.refunds ? chart(a.daily, 'Net spending', false, a.monthly) : empty('No spending recorded', 'Your spending pattern will appear as you add expenses.', 'chart')}</section><section class="panel"><div class="panel-head"><div><h2>Spending by category</h2><p>Every category has its place</p></div></div>${categoryChart(a)}</section><section class="panel"><div class="panel-head"><div><h2>Your cash over time</h2><p>Closing balance ${a.monthly ? 'each month' : 'each day'} · includes balance corrections</p></div></div>${chart(a.cash, 'Cash balance', true, a.monthly)}</section><section class="panel"><div class="panel-head"><div><h2>A closer look at lessons</h2><p>Net spending across your subjects</p></div>${icon('book')}</div>${a.subjects.length ? `<div class="category-list">${a.subjects.map(s => `<div><div class="category-line"><span>${escape(s.name)}</span><span>${egp(s.amount)}</span></div><div class="meter"><span style="width:${Math.max(0, s.amount / Math.max(1, ...a.subjects.map(x => x.amount)) * 100)}%;background:#ac9af7"></span></div></div>`).join('')}</div>` : empty('A little more detail', 'Choose a subject when recording a lesson to see its spending here.', 'book')}</section></div><p class="caption">Refunds count on the day the cash was returned. Balance adjustments and opening cash are excluded from spending. All dates use ${escape(zone())}.</p>`;
 }
 function options(items, selected, all) { return `<option value="">${all}</option>${items.map(i => `<option value="${i.id}" ${selected === i.id ? 'selected' : ''}>${escape(i.name)}${i.archived ? ' (archived)' : ''}</option>`).join('')}`; }
 function renderHistory() {
@@ -123,14 +149,14 @@ function renderHistory() {
 }
 function historyList() {
   if (!historyRows.length) return empty('Nothing here just yet', 'Try changing your filters, or add a new transaction.', 'search');
-  const groups = new Map(); historyRows.forEach(t => { const day = dateKey(t.createdAt); if (!groups.has(day)) groups.set(day, []); groups.get(day).push(t); });
-  return [...groups].map(([day, rows]) => `<h3 class="history-day">${day === state.today ? 'Today' : formatDate(day + 'T12:00:00Z', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</h3>${transactionRows(rows)}`).join('');
+  const groups = new Map(); historyRows.forEach(t => { const day = dateKey(transactionTime(t)); if (!groups.has(day)) groups.set(day, []); groups.get(day).push(t); });
+  return [...groups].map(([day, rows]) => `<h3 class="history-day">${day === state.today ? 'Today' : calendarLabel(day, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</h3>${transactionRows(rows)}`).join('');
 }
 function taxonomyRows(items, kind) {
   return items.map(item => `<div class="setting-row"><div class="name">${kind === 'category' ? `<span class="dot" style="background:${item.color}"></span>` : icon('book')}${escape(item.name)}${item.archived ? '<span class="archive-tag">Archived</span>' : ''}</div><div class="row-actions"><button class="icon-button" data-action="rename-item" data-kind="${kind}" data-id="${item.id}" aria-label="Rename ${escape(item.name)}">${icon('edit')}</button><button class="icon-button" data-action="${item.archived ? 'unarchive' : 'archive'}-item" data-kind="${kind}" data-id="${item.id}" aria-label="${item.archived ? 'Unarchive' : 'Archive'} ${escape(item.name)}">${icon(item.archived ? 'restore' : 'archive')}</button><button class="icon-button" data-action="delete-item" data-kind="${kind}" data-id="${item.id}" aria-label="Delete ${escape(item.name)}">${icon('trash')}</button></div></div>`).join('');
 }
 function renderSettings(backups) {
-  $('#main').innerHTML = `${intro('A space that works for you.', 'Your categories, your cash, your peace of mind.')}<div class="settings-grid"><section class="panel"><div class="panel-head"><div><h2>Categories</h2><p>Give every expense a home</p></div><button class="btn small ghost" data-action="add-item" data-kind="category">${icon('plus')}Add</button></div>${taxonomyRows(state.categories, 'category') || '<p class="muted">Add a category to record expenses.</p>'}<p class="caption">Used categories can be archived. Their history stays intact.</p></section><section class="panel"><div class="panel-head"><div><h2>Lesson subjects</h2><p>The details behind your lessons</p></div><button class="btn small ghost" data-action="add-item" data-kind="subject">${icon('plus')}Add</button></div>${taxonomyRows(state.subjects, 'subject') || '<p class="muted">No subjects yet.</p>'}<p class="caption">Subjects appear when you choose the Lessons category.</p></section><section class="panel"><div class="panel-head"><div><h2>Your cash</h2><p>Keep the number true to what's in hand</p></div>${icon('wallet')}</div><div class="setting-row"><div><span class="eyebrow">Current balance</span><p style="font-size:28px;color:var(--text);font-variant-numeric:tabular-nums">${amount(state.balance)} <small>${code()}</small></p></div><button class="btn secondary" data-action="adjust">${icon('edit')}Edit balance</button></div><p class="caption">Corrections are recorded as balance adjustments. They won't change your spending totals.</p></section><section class="panel"><div class="panel-head"><div><h2>Privacy & preferences</h2><p>A small app, just for you</p></div>${icon('shield')}</div><div class="setting-row"><div class="name">Currency</div><div class="row-actions"><span class="muted">${code()} · ${escape(currencyName(code()))}</span><button class="btn small secondary" data-action="change-currency">Change</button></div></div><p class="caption">Changing currency only relabels amounts. Past numbers are not converted.</p><div class="setting-row"><div class="name">Timezone</div><div class="row-actions"><span class="muted">${escape(zone())}</span><button class="btn small secondary" data-action="change-timezone">Change</button></div></div><div class="setting-row"><div class="name">Week starts</div><span class="muted">Sunday</span></div><div class="setting-row"><div><span class="name">PIN lock</span><p>Each device stays unlocked for 24 hours.</p></div><button class="btn ghost small" data-action="lock">${icon('lock')}Lock now</button></div></section><section class="panel wide"><div class="panel-head"><div><h2>A little backup goes a long way.</h2><p>Keep a copy of your cash history</p></div>${icon('archive')}</div><div class="setting-info">${icon('check')}Automatic backup every week · Latest 8 weekly copies retained<br>${backups.lastWeekly ? `Last backup: ${formatDate(backups.lastWeekly, { dateStyle: 'medium', timeStyle: 'short' })}. Next due: ${formatDate(backups.nextWeekly, { dateStyle: 'medium' })}.` : 'Your first automatic backup is pending.'} If your PC is off, an overdue backup runs when Pocket next starts.</div>${backups.error ? errorBox(backups.error) : ''}<div class="backup-actions"><button class="btn" data-action="backup">${icon('download')}Create manual backup</button><button class="btn ghost" data-action="import-backup">${icon('upload')}Restore from file</button><input id="backup-file" type="file" accept=".json,application/json" hidden></div><p class="caption">Backups contain financial records, categories, and subjects. Your PIN and device sessions are excluded. Download a copy to keep it somewhere else.</p><div class="backup-list">${backups.items.map(b => `<div class="setting-row"><div><span class="name">${icon('archive')}${{ weekly: 'Weekly backup', manual: 'Manual backup', 'before-restore': 'Before restore · recovery copy' }[b.kind]}</span><p>${formatDate(b.createdAt, { dateStyle: 'medium', timeStyle: 'short' })}</p></div><div class="row-actions"><a class="btn ghost small" href="/api/backup/download?name=${encodeURIComponent(b.name)}" download aria-label="Download ${escape(b.kind)} backup from ${escape(b.createdAt)}">${icon('download')}Download</a><button class="btn ghost small" data-action="restore-backup" data-name="${b.name}">Restore</button></div></div>`).join('')}</div></section></div>`;
+  $('#main').innerHTML = `${intro('A space that works for you.', 'Your categories, your cash, your peace of mind.')}<div class="settings-grid"><section class="panel"><div class="panel-head"><div><h2>Categories</h2><p>Give every expense a home</p></div><button class="btn small ghost" data-action="add-item" data-kind="category">${icon('plus')}Add</button></div>${taxonomyRows(state.categories, 'category') || '<p class="muted">Add a category to record expenses.</p>'}<p class="caption">Used categories can be archived. Their history stays intact.</p></section><section class="panel"><div class="panel-head"><div><h2>Lesson subjects</h2><p>The details behind your lessons</p></div><button class="btn small ghost" data-action="add-item" data-kind="subject">${icon('plus')}Add</button></div>${taxonomyRows(state.subjects, 'subject') || '<p class="muted">No subjects yet.</p>'}<p class="caption">Subjects appear when you choose the Lessons category.</p></section><section class="panel"><div class="panel-head"><div><h2>Your cash</h2><p>Keep the number true to what's in hand</p></div>${icon('wallet')}</div><div class="setting-row"><div><span class="eyebrow">Current balance</span><p style="font-size:28px;color:var(--text);font-variant-numeric:tabular-nums">${amount(state.balance)} <small>${code()}</small></p></div><button class="btn secondary" data-action="adjust">${icon('edit')}Edit balance</button></div><div class="setting-row"><div><span class="name">Tracking start date</span><p>${dayLabel(state.openingDate)}</p></div><button class="btn small secondary" data-action="opening-date">Change</button></div><p class="caption">Corrections are recorded as balance adjustments. They won't change your spending totals.</p></section><section class="panel"><div class="panel-head"><div><h2>Privacy & preferences</h2><p>A small app, just for you</p></div>${icon('shield')}</div><div class="setting-row"><div class="name">Currency</div><div class="row-actions"><span class="muted">${code()} · ${escape(currencyName(code()))}</span><button class="btn small secondary" data-action="change-currency">Change</button></div></div><p class="caption">Changing currency only relabels amounts. Past numbers are not converted.</p><div class="setting-row"><div class="name">Timezone</div><div class="row-actions"><span class="muted">${escape(zone())}</span><button class="btn small secondary" data-action="change-timezone">Change</button></div></div><div class="setting-row"><div class="name">Week starts</div><span class="muted">Sunday</span></div><div class="setting-row"><div><span class="name">PIN lock</span><p>Each device stays unlocked for 24 hours.</p></div><button class="btn ghost small" data-action="lock">${icon('lock')}Lock now</button></div></section><section class="panel wide"><div class="panel-head"><div><h2>A little backup goes a long way.</h2><p>Keep a copy of your cash history</p></div>${icon('archive')}</div><div class="setting-info">${icon('check')}Automatic backup every week · Latest 8 weekly copies retained<br>${backups.lastWeekly ? `Last backup: ${formatDate(backups.lastWeekly, { dateStyle: 'medium', timeStyle: 'short' })}. Next due: ${formatDate(backups.nextWeekly, { dateStyle: 'medium' })}.` : 'Your first automatic backup is pending.'} If your PC is off, an overdue backup runs when Pocket next starts.</div>${backups.error ? errorBox(backups.error) : ''}<p class="caption">${escape(backups.health)}</p><div class="setting-info">${backups.secondary.configured ? `Secondary backup: ${backups.secondary.lastCopied ? 'last copied ' + formatDate(backups.secondary.lastCopied, { dateStyle: 'medium', timeStyle: 'short' }) : 'waiting for first copy'}.` : 'Secondary backup is not configured. You can configure another drive or network folder on the PC; see README → Secondary backups.'}</div>${backups.secondary.error ? errorBox(backups.secondary.error) : ''}<div class="backup-actions"><button class="btn" data-action="backup">${icon('download')}Create manual backup</button><button class="btn ghost" data-action="import-backup">${icon('upload')}Restore from file</button><input id="backup-file" type="file" accept=".json,application/json" hidden></div><p class="caption">Backups contain financial records, categories, and subjects. Your PIN and device sessions are excluded. Download a copy to keep it somewhere else.</p><div class="backup-list">${backups.items.map(b => `<div class="setting-row"><div><span class="name">${icon('archive')}${{ weekly: 'Weekly backup', manual: 'Manual backup', 'before-restore': 'Before restore · recovery copy', 'before-upgrade': 'Before upgrade · original data' }[b.kind]}</span><p>${formatDate(b.createdAt, { dateStyle: 'medium', timeStyle: 'short' })}</p></div><div class="row-actions"><a class="btn ghost small" href="/api/backup/download?name=${encodeURIComponent(b.name)}" download aria-label="Download ${escape(b.kind)} backup from ${escape(b.createdAt)}">${icon('download')}Download</a><button class="btn ghost small" data-action="restore-backup" data-name="${b.name}">Restore</button></div></div>`).join('')}</div></section></div>`;
 }
 async function loadPage({ preserve = false } = {}) {
   if (!authenticated) return;
@@ -146,9 +172,10 @@ async function loadPage({ preserve = false } = {}) {
     } else if (page === 'analysis') { const a = await api(`analytics?${periodQuery()}`); if (token !== pageToken) return; renderAnalysis(a); }
     else if (page === 'history') { const h = await api(`history?${query(historyFilters)}`); if (token !== pageToken) return; historyRows = h.rows; historyTotal = h.total; renderHistory(); }
     else { const b = await api('backups'); if (token !== pageToken) return; renderSettings(b); }
+    $('#main').insertAdjacentHTML('afterbegin', pendingNotice());
   } catch (error) {
     if (!authenticated || token !== pageToken) return;
-    $('#main').innerHTML = `<div class="connection-error">${errorBox(error.message)}<button class="btn secondary" data-action="refresh">${icon('restore')}Try again</button></div>`;
+    $('#main').innerHTML = `<div class="connection-error">${errorBox(error.message)}${pendingNotice()}<button class="btn secondary" data-action="refresh">${icon('restore')}Try again</button></div>`;
   }
 }
 function modalFrame(title, subtitle, content) {
@@ -166,18 +193,21 @@ function subjectField(categoryId, old) {
   return `<label class="field"><span>Lesson subject <span class="optional">· optional</span></span><select name="subjectId">${options(state.subjects.filter(s => !s.archived || s.id === old?.subjectId), old?.subjectId, 'Choose a subject')}</select></label>`;
 }
 function openEntry(action, old) {
+  if (pendingSave) throw new Error('Check / retry your pending save before starting another change.');
   formContext = { action, old, categoryId: old?.categoryId || '', revision: state.revision };
   const expense = action === 'expense' || action === 'edit' && old.type === 'expense';
   const title = { expense: 'A little spent.', income: 'A little added.', adjust: 'Set your actual cash.', refund: 'Cash coming back.', edit: 'Make a correction.' }[action];
-  const subtitle = { expense: 'Record it now. Understand it later.', income: 'Money from your father, or any cash you receive.', adjust: 'Enter the total cash you actually have—not the difference.', refund: `You can refund up to ${egp(old?.refundable || 0)} for this expense.`, edit: 'The original date and time will stay exactly the same.' }[action];
-  modalFrame(title, subtitle, `<form id="entry-form"><div class="form-grid"><label class="field"><span>${action === 'adjust' ? 'Actual cash balance' : 'Amount'}</span><div class="amount-input"><input name="amount" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" maxlength="10" value="${action === 'edit' ? numeric(old.amount) : action === 'adjust' ? numeric(state.balance) : ''}" required aria-describedby="entry-error"><span>${code()}</span></div></label>${expense ? categoryFields(old) : ''}<label class="field"><span>${action === 'income' ? 'Note' : 'Description'} <span class="optional">· optional</span></span><textarea name="description" maxlength="500" rows="2" placeholder="${expense ? 'What was it for?' : 'Anything you want to remember…'}">${escape(action === 'edit' ? old.description : '')}</textarea></label><div id="balance-preview" class="balance-preview"><span>Balance after ${action === 'edit' ? 'correction' : action === 'refund' ? 'refund' : action === 'expense' ? 'expense' : 'saving'}</span><strong>${egp(state.balance)}</strong></div><div class="inline-error" id="entry-error" role="alert"></div><p class="form-tip">${icon('clock')}${action === 'edit' ? escape(formatDate(old.createdAt, { dateStyle: 'medium', timeStyle: 'short' })) + ' · original timestamp' : 'Date and time are recorded automatically.'}</p></div><div class="modal-actions"><button type="button" class="btn ghost" data-action="close-modal">Cancel</button><button class="btn" type="submit">${{ expense: 'Save expense', income: 'Add money', refund: 'Save refund', adjust: 'Update balance', edit: 'Save changes' }[action]}</button></div></form>`);
+  const subtitle = { expense: 'Record it now. Understand it later.', income: 'Money from your father, or any cash you receive.', adjust: 'Enter the total cash you actually have—not the difference.', refund: `You can refund up to ${egp(old?.refundable || 0)} for this expense.`, edit: 'Correct the amount or transaction date. The original recording time stays unchanged.' }[action];
+  modalFrame(title, subtitle, `<form id="entry-form"><div class="form-grid"><label class="field"><span>${action === 'adjust' ? 'Actual cash balance' : 'Amount'}</span><div class="amount-input"><input name="amount" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" maxlength="11" value="${action === 'edit' ? numeric(old.amount) : action === 'adjust' ? numeric(state.balance) : ''}" required aria-describedby="entry-error"><span>${code()}</span></div></label>${expense ? categoryFields(old) : ''}${action !== 'adjust' ? dateFields(old) : ''}<label class="field"><span>${action === 'income' ? 'Note' : 'Description'} <span class="optional">· optional</span></span><textarea name="description" maxlength="500" rows="2" placeholder="${expense ? 'What was it for?' : 'Anything you want to remember…'}">${escape(action === 'edit' ? old.description : '')}</textarea></label><div id="balance-preview" class="balance-preview"><span>Balance after ${action === 'edit' ? 'correction' : action === 'refund' ? 'refund' : action === 'expense' ? 'expense' : 'saving'}</span><strong>${egp(state.balance)}</strong></div><div class="inline-error" id="entry-error" role="alert"></div><p class="form-tip">${icon('clock')}${action === 'edit' ? escape(formatDate(old.createdAt, { dateStyle: 'medium', timeStyle: 'short' })) + ' · original timestamp' : 'Recording time is automatic. The transaction date controls your history and analysis.'}</p></div><div class="modal-actions"><button type="button" class="btn ghost" data-action="close-modal">Cancel</button><button class="btn" type="submit">${{ expense: 'Save expense', income: 'Add money', refund: 'Save refund', adjust: 'Update balance', edit: 'Save changes' }[action]}</button></div></form>`);
+  restoreDraft(action, old);
   updatePreview();
 }
 function updatePreview() {
   if (!$('#entry-form')) return;
   const raw = $('#entry-form [name=amount]').value;
-  const valid = /^\d{1,7}(\.\d{1,2})?$/.test(raw);
-  const entered = valid ? Math.round(Number(raw) * 100) : 0;
+  const parsed = parseAmount(raw, code());
+  const valid = parsed !== null;
+  const entered = parsed || 0;
   const { action, old } = formContext;
   let predicted = state.balance;
   if (action === 'adjust') predicted = entered;
@@ -188,7 +218,7 @@ function updatePreview() {
 }
 function openDetail(t) {
   formContext = { old: t };
-  modalFrame(transactionTitle(t), `${types[t.type]} · ${formatDate(t.createdAt, { dateStyle: 'medium', timeStyle: 'short' })}`, `<div class="detail-amount">${t.effect >= 0 ? '+' : '−'}${amount(Math.abs(t.effect))}<small>${code()}</small></div><div class="detail-row"><span>Type</span><span>${types[t.type]}</span></div>${t.category ? `<div class="detail-row"><span>Category</span><span>${escape(t.category)}</span></div>` : ''}${t.subject ? `<div class="detail-row"><span>Subject</span><span>${escape(t.subject)}</span></div>` : ''}${t.refunded ? `<div class="detail-row"><span>Already refunded</span><span>${egp(t.refunded)}</span></div>` : ''}${t.description ? `<div class="detail-note">${escape(t.description)}</div>` : ''}${t.type === 'opening' ? '<p class="caption">Use Edit balance in Settings to correct your current cash.</p>' : `<div class="detail-buttons">${t.type !== 'adjustment' ? `<button class="btn secondary" data-action="edit-record" data-id="${t.id}">${icon('edit')}Edit</button>` : ''}${t.type === 'expense' && t.refundable > 0 ? `<button class="btn secondary" data-action="refund-record" data-id="${t.id}">${icon('restore')}Refund</button>` : ''}<button class="btn danger" data-action="delete-record" data-id="${t.id}">${icon('trash')}Delete</button></div>`}`);
+  modalFrame(transactionTitle(t), `${types[t.type]} · ${formatDate(transactionTime(t), { dateStyle: 'medium' })}`, `<div class="detail-amount">${t.effect >= 0 ? '+' : '−'}${amount(Math.abs(t.effect))}<small>${code()}</small></div><div class="detail-row"><span>Recorded</span><span>${formatDate(t.createdAt, { dateStyle: 'medium', timeStyle: 'short' })}</span></div><div class="detail-row"><span>Type</span><span>${types[t.type]}</span></div>${t.category ? `<div class="detail-row"><span>Category</span><span>${escape(t.category)}</span></div>` : ''}${t.subject ? `<div class="detail-row"><span>Subject</span><span>${escape(t.subject)}</span></div>` : ''}${t.refunded ? `<div class="detail-row"><span>Already refunded</span><span>${egp(t.refunded)}</span></div>` : ''}${t.description ? `<div class="detail-note">${escape(t.description)}</div>` : ''}${t.type === 'opening' ? '<p class="caption">Use Edit balance in Settings to correct your current cash.</p>' : `<div class="detail-buttons">${t.type !== 'adjustment' ? `<button class="btn secondary" data-action="edit-record" data-id="${t.id}">${icon('edit')}Edit</button>` : ''}${t.type === 'expense' && t.refundable > 0 ? `<button class="btn secondary" data-action="refund-record" data-id="${t.id}">${icon('restore')}Refund</button>` : ''}<button class="btn danger" data-action="delete-record" data-id="${t.id}">${icon('trash')}Delete</button></div>`}`);
 }
 function confirmAction(title, description, context, label = 'Confirm') {
   formContext = context;
@@ -212,9 +242,52 @@ function openRestore(backup, name) {
   modalFrame('Restore your cash history?', 'This replaces your current records, categories, and subjects. Pocket saves a recovery copy first. Your PIN stays the same.', `<form id="restore-form" class="form-grid">${backup ? `<div class="setting-info">${backup.data?.transactions?.length ?? '?'} transactions in this file${backup.createdAt && !Number.isNaN(Date.parse(backup.createdAt)) ? ` · saved ${formatDate(backup.createdAt, { dateStyle: 'medium' })}` : ''}</div>` : ''}<label class="field"><span>Type RESTORE to confirm</span><input name="confirmation" autocomplete="off" required pattern="RESTORE" placeholder="RESTORE"></label><div class="inline-error" id="restore-error" role="alert"></div><div class="modal-actions"><button type="button" class="btn ghost" data-action="close-modal">Cancel</button><button class="btn danger">Restore backup</button></div></form>`);
 }
 async function saveAction(action, input, message) {
-  const result = await api(`action/${action}`, input); state.revision = result.revision; state.balance = result.balance;
-  modal.close(); toast(message); await loadPage({ preserve: true });
+  if (pendingSave && pendingSave.action !== action) throw new Error('Check / retry your pending save before starting another change.');
+  captureDraft();
+  captureOpeningDraft();
+  const pending = pendingSave || { action, input: { ...input, requestId: saveIdentifier() }, message };
+  savePending(pending);
+  try {
+    const receipt = await api('request-status?' + query({ id: pending.input.requestId }));
+    if (!receipt.result) await api(pending.action === 'restore' ? 'restore' : 'action/' + pending.action, pending.input);
+    savePending(null); clearDraft(); modal.close(); toast(pending.message); await loadPage({ preserve: true });
+  } catch (error) {
+    if (!error.uncertain && error.status && error.status !== 401) {
+      savePending(null);
+      if (error.status === 409 && authenticated) {
+        state = await api('state'); if (formContext) formContext.revision = state.revision;
+        error.message += ' Your draft is kept; review it and submit again.';
+      }
+    }
+    throw error;
+  } finally { freezePendingForm(); }
 }
+function freezePendingForm() {
+  const form = $('#entry-form') || $('#opening') || $('#restore-form'); if (!form) return;
+  form.querySelectorAll('input,textarea,select,button[type=button]').forEach(control => control.disabled = Boolean(pendingSave));
+  const save = form.querySelector('button[type=submit],button:not([type])'); if (save && pendingSave) save.textContent = 'Check / retry save';
+}
+function dateFields(old) {
+  const value = old ? dateKey(transactionTime(old)) : state.today;
+  return '<label class="field"><span>Transaction date</span><input type="date" name="date" value="' + value + '" max="' + state.today + '" required></label><div class="date-shortcuts"><button type="button" class="btn small ghost" data-action="entry-today">Today</button><button type="button" class="btn small ghost" data-action="entry-yesterday">Yesterday</button></div>';
+}
+function restoreDraft(action, old) {
+  if (draft?.action === action && draft.old?.id === old?.id) {
+    for (const [name, value] of Object.entries(draft.values || {})) { const input = $('#entry-form')?.elements.namedItem(name); if (input) input.value = value; }
+    if (draft.categoryId) {
+      formContext.categoryId = draft.categoryId;
+      modal.querySelectorAll('.choice').forEach(button => { const selected = button.dataset.id === draft.categoryId; button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', selected); });
+      $('#subject-field').innerHTML = subjectField(draft.categoryId, old);
+      const subject = $('#entry-form')?.elements.namedItem('subjectId'); if (subject) subject.value = draft.values.subjectId || '';
+    }
+  }
+  freezePendingForm();
+}
+function openStartDate() {
+  formContext = { revision: state.revision };
+  modalFrame('Tracking start date', 'Choose when your opening cash was available. Entries must follow it and every historical balance must stay non-negative.', '<form id="opening-date-form"><label class="field"><span>Tracking start date</span><input type="date" name="date" value="' + state.openingDate + '" max="' + state.today + '" required></label><div class="inline-error" role="alert"></div><div class="modal-actions"><button type="button" class="btn ghost" data-action="close-modal">Cancel</button><button class="btn">Save date</button></div></form>');
+}
+
 async function submit(form, callback) {
   const buttons = [...form.querySelectorAll('button[type=submit],button:not([type])')];
   const error = form.querySelector('.inline-error'); if (error) error.textContent = '';
@@ -227,8 +300,9 @@ document.addEventListener('submit', event => {
   const form = event.target; event.preventDefault();
   const values = Object.fromEntries(new FormData(form));
   submit(form, async () => {
-    if (form.id === 'login') { await api('login', values); authenticated = true; await loadPage(); }
+    if (form.id === 'login') { await api('login', values); authenticated = true; await loadPage(); if (draft && !pendingSave) openEntry(draft.action, draft.old); }
     else if (form.id === 'opening') { await saveAction('opening', { ...values, revision: state.revision }, 'Your starting cash is ready. Welcome to Pocket.'); }
+    else if (form.id === 'opening-date-form') { await saveAction('opening-date', { ...values, revision: formContext.revision }, 'Tracking start date updated.'); }
     else if (form.id === 'custom-range') { if (values.from > values.to) throw new Error('Start date must be before the end date.'); customFrom = values.from; customTo = values.to; await loadPage({ preserve: true }); }
     else if (form.id === 'history-filters') { if (values.from && values.to && values.from > values.to) throw new Error('Start date must be before the end date.'); historyFilters = values; await loadPage({ preserve: true }); }
     else if (form.id === 'entry-form') {
@@ -241,11 +315,21 @@ document.addEventListener('submit', event => {
     else if (form.id === 'currency-form') { await saveAction('currency', { currency: values.currency, revision: formContext.revision }, 'Currency updated.'); }
     else if (form.id === 'timezone-form') { await saveAction('timezone', { timezone: values.timezone, revision: formContext.revision }, 'Timezone updated. Dates now use the new zone.'); }
     else if (form.id === 'confirm-form') { const { action, input, message } = formContext; await saveAction(action, input, message); }
-    else if (form.id === 'restore-form') { await api('restore', { backup: formContext.backup, name: formContext.name, revision: formContext.revision, confirmation: values.confirmation }); modal.close(); toast('Backup restored. A recovery copy was saved.'); await loadPage(); }
+    else if (form.id === 'restore-form') { await saveAction('restore', { backup: formContext.backup, name: formContext.name, revision: formContext.revision, confirmation: values.confirmation }, 'Backup restored. A recovery copy was saved.'); }
   });
 });
-document.addEventListener('input', event => { if (event.target.matches('#entry-form [name=amount]')) updatePreview(); });
+document.addEventListener('input', event => { if (event.target.closest('#entry-form')) captureDraft(); if (event.target.closest('#opening')) captureOpeningDraft(); if (event.target.matches('#entry-form [name=amount]')) updatePreview(); });
 document.addEventListener('change', async event => {
+  if (event.target.closest('#entry-form')) captureDraft();
+  if (event.target.closest('#opening')) captureOpeningDraft();
+  if (event.target.matches('#opening [name=currency]')) {
+    state.currency = event.target.value; $('#opening .amount-input > span').textContent = code();
+    $('#opening [name=amount]').placeholder = currencyDigits(code()) ? '0.' + '0'.repeat(currencyDigits(code())) : '0';
+  }
+  if (event.target.matches('#opening [name=timezone]')) {
+    const previous = state.today; state.timezone = event.target.value; state.today = dateKey(new Date().toISOString());
+    const field = $('#opening [name=date]'); field.max = state.today; if (field.value === previous) field.value = state.today;
+  }
   if (event.target.id === 'period') { period = event.target.value; await loadPage({ preserve: true }); }
   if (event.target.id === 'backup-file') {
     const file = event.target.files[0]; if (!file) return;
@@ -258,8 +342,12 @@ document.addEventListener('click', async event => {
   const button = event.target.closest('[data-action]'); if (!button || button.disabled) return;
   const { action, id, kind, name } = button.dataset;
   try {
-    if (action === 'close-modal') modal.close();
-    else if (action === 'lock') { await api('logout', {}); authenticated = false; pageToken++; modal.close(); renderLogin(); }
+    if (pendingSave && !['retry-save', 'close-modal', 'lock', 'refresh', 'detail', 'clear-filters', 'load-more'].includes(action)) throw new Error('Check / retry your pending save before starting another change.');
+    if (action === 'close-modal') { captureDraft(); modal.close(); }
+    else if (action === 'retry-save') await saveAction(pendingSave.action, pendingSave.input, pendingSave.message);
+    else if (action === 'opening-date') openStartDate();
+    else if (action === 'entry-today' || action === 'entry-yesterday') { $('#entry-form [name=date]').value = action === 'entry-today' ? state.today : shiftCalendar(state.today, -1); captureDraft(); }
+    else if (action === 'lock') { await api('logout', {}); if (!pendingSave) clearDraft(); authenticated = false; pageToken++; modal.close(); renderLogin(); }
     else if (['expense', 'income', 'adjust'].includes(action)) openEntry(action);
     else if (action === 'detail') openDetail(records.get(id));
     else if (action === 'edit-record') openEntry('edit', records.get(id));
@@ -268,7 +356,7 @@ document.addEventListener('click', async event => {
     else if (action === 'choose-category') {
       formContext.categoryId = id;
       modal.querySelectorAll('.choice').forEach(b => { const on = b.dataset.id === id; b.classList.toggle('selected', on); b.setAttribute('aria-pressed', on); });
-      $('#subject-field').innerHTML = subjectField(id, formContext.old);
+      $('#subject-field').innerHTML = subjectField(id, formContext.old); captureDraft();
     } else if (action === 'choose-color') {
       formContext.color = button.dataset.color; modal.querySelectorAll('.color-choice').forEach(b => { const on = b === button; b.classList.toggle('selected', on); b.setAttribute('aria-pressed', on); });
     } else if (action === 'refresh') await loadPage();
@@ -286,13 +374,17 @@ document.addEventListener('click', async event => {
   } catch (error) { if (authenticated) toast(error.message); }
   finally { if (button.isConnected) button.disabled = false; }
 });
-window.addEventListener('hashchange', () => { modal.close(); loadPage(); });
+modal.addEventListener('cancel', captureDraft);
+window.addEventListener('hashchange', () => { captureDraft(); modal.close(); loadPage(); });
+window.addEventListener('offline', () => connectionStatus(false));
+window.addEventListener('online', () => { if (authenticated) api('session').catch(() => {}); });
+setInterval(() => { if (authenticated && !document.hidden) api('session').catch(() => {}); }, 20000);
 window.addEventListener('focus', async () => {
   if (!authenticated || modal.open || !state?.initialized || document.activeElement?.matches('input,textarea,select')) return;
   try { const fresh = await api('state'); if (fresh.revision !== state.revision || fresh.today !== state.today) await loadPage({ preserve: true }); } catch { /* Explicit actions expose connection errors without interrupting typing. */ }
 });
 async function boot() {
-  try { const session = await api('session'); authenticated = session.authenticated; if (authenticated) await loadPage(); else renderLogin(session.configured ? '' : 'Set a PIN on your PC before opening Pocket.'); }
+  try { const session = await api('session'); authenticated = session.authenticated; if (authenticated) { await loadPage(); if (draft && !pendingSave) openEntry(draft.action, draft.old); } else renderLogin(session.configured ? '' : 'Set a PIN on your PC before opening Pocket.'); }
   catch (error) { app.innerHTML = `<main id="main" class="auth-page"><section class="panel connection-error"><h1>Pocket is taking a moment.</h1>${errorBox(error.message)}<button class="btn" id="retry-boot">Try again</button></section></main>`; $('#retry-boot').addEventListener('click', boot); }
 }
 await boot();

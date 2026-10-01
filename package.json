@@ -2,7 +2,7 @@
   "name": "pocket-cash-tracker",
   "version": "1.0.0",
   "type": "module",
-  "description": "A private, offline-first physical cash tracker — Node.js + SQLite + vanilla JS, no dependencies",
+  "description": "A private local physical cash tracker — Node.js + SQLite + vanilla JS, zero runtime dependencies",
   "license": "MIT",
   "author": "Mostafa Atlas",
   "repository": {
@@ -13,13 +13,25 @@
     "url": "https://github.com/Mostafa-Atlas/pocket-cash-tracker/issues"
   },
   "homepage": "https://github.com/Mostafa-Atlas/pocket-cash-tracker#readme",
-  "keywords": ["nodejs", "sqlite", "vanilla-js", "pwa", "finance", "cash-tracker", "offline-first"],
-  "engines": { "node": ">=24.0.0" },
+  "keywords": [
+    "nodejs",
+    "sqlite",
+    "vanilla-js",
+    "finance",
+    "cash-tracker"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
     "start": "node server.mjs",
     "set-pin": "node scripts/set-pin.mjs",
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check server.mjs && node --check lib/ledger.mjs && node --check lib/store.mjs && node --check public/app.js",
-    "preview": "node scripts/ui-preview.mjs"
+    "check": "node --check server.mjs && node --check lib/ledger.mjs && node --check lib/store.mjs && node --check public/app.js && node --check public/domain.js && node --check public/connection.js",
+    "preview": "node scripts/ui-preview.mjs",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
   }
 }

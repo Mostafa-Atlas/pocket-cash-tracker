@@ -8,13 +8,13 @@ function ledger() {
   return { get state() { return state; }, act(action, input = {}, now = MONDAY) { state = mutate(state, action, { revision: state.revision, ...input }, now); return state.transactions.at(-1); } };
 }
 test('money parses decimal strings exactly and rejects ambiguous amounts', () => {
-  assert.equal(money('0.10'), 10); assert.equal(money('1.01'), 101); assert.equal(money(' 5.5 '), 550); assert.equal(money('0', true), 0);
+  assert.equal(money('0.10'), 100); assert.equal(money('1.01'), 1010); assert.equal(money(' 5.5 '), 5500); assert.equal(money('0', true), 0);
   for (const invalid of ['-1', '0', '1.001', '1e3', '', 'NaN', 'Infinity', '1,000', '1000001', 1, null]) assert.throws(() => money(invalid));
 });
 test('opening is single-use; money received and expenses maintain exact cash', () => {
   const l = ledger(); assert.throws(() => l.act('expense', { amount: '1', categoryId: 'food' }));
   l.act('opening', { amount: '100' }); l.act('income', { amount: '50.20', description: 'Dad' }); l.act('expense', { amount: '20.10', categoryId: 'food' });
-  assert.equal(balance(l.state), 13010); assert.throws(() => l.act('opening', { amount: '1' }));
+  assert.equal(balance(l.state), 130100); assert.throws(() => l.act('opening', { amount: '1' }));
 });
 test('overspending and negative corrections are rejected without modifying source', () => {
   const l = ledger(); l.act('opening', { amount: '10' }); const before = JSON.stringify(l.state);
@@ -25,26 +25,26 @@ test('overspending and negative corrections are rejected without modifying sourc
 test('full and partial refunds are capped; expense deletion requires removing linked refunds', () => {
   const l = ledger(); l.act('opening', { amount: '100' }); const expense = l.act('expense', { amount: '30', categoryId: 'food' });
   const r1 = l.act('refund', { expenseId: expense.id, amount: '10' });
-  assert.equal(balance(l.state), 8000);
+  assert.equal(balance(l.state), 80000);
   assert.throws(() => l.act('refund', { expenseId: expense.id, amount: '20.01' }), /refundable/);
   const r2 = l.act('refund', { expenseId: expense.id, amount: '20' });
-  assert.equal(balance(l.state), 10000); assert.equal(analytics(l.state, {}, MONDAY).spent, 0);
+  assert.equal(balance(l.state), 100000); assert.equal(analytics(l.state, {}, MONDAY).spent, 0);
   assert.throws(() => l.act('delete', { id: expense.id }), /linked refunds/);
   assert.throws(() => l.act('edit', { id: expense.id, amount: '29', categoryId: 'food' }), /smaller than its refunds/);
   l.act('delete', { id: r1.id }); l.act('delete', { id: r2.id }); l.act('delete', { id: expense.id });
-  assert.equal(balance(l.state), 10000);
+  assert.equal(balance(l.state), 100000);
 });
 test('refund edits preserve caps and original timestamps', () => {
   const l = ledger(); l.act('opening', { amount: '100' }); const expense = l.act('expense', { amount: '30', categoryId: 'food' });
   const refund = l.act('refund', { expenseId: expense.id, amount: '5' });
   l.act('edit', { id: refund.id, amount: '8', createdAt: '1999-01-01', description: 'Correct return' }, '2026-09-15T12:00:00.000Z');
-  assert.equal(l.state.transactions.at(-1).createdAt, MONDAY); assert.equal(balance(l.state), 7800);
+  assert.equal(l.state.transactions.at(-1).createdAt, MONDAY); assert.equal(balance(l.state), 78000);
   assert.throws(() => l.act('edit', { id: refund.id, amount: '31' }), /Refunds cannot exceed/);
 });
 test('corrections change only permitted fields and reject stale revisions', () => {
   const l = ledger(); l.act('opening', { amount: '100' }); const expense = l.act('expense', { amount: '20', categoryId: 'food' });
   l.act('edit', { id: expense.id, amount: '15', categoryId: 'lessons', subjectId: 'chemistry', description: 'Lesson', createdAt: '2000-01-01', type: 'income' }, '2026-09-15T12:00:00.000Z');
-  const t = l.state.transactions.at(-1); assert.equal(t.createdAt, MONDAY); assert.equal(t.type, 'expense'); assert.equal(t.subjectId, 'chemistry'); assert.equal(balance(l.state), 8500);
+  const t = l.state.transactions.at(-1); assert.equal(t.createdAt, MONDAY); assert.equal(t.type, 'expense'); assert.equal(t.subjectId, 'chemistry'); assert.equal(balance(l.state), 85000);
   assert.throws(() => mutate(l.state, 'income', { revision: 0, amount: '1' }), e => e.status === 409);
 });
 test('deleting or reducing income cannot break an earlier balance', () => {
@@ -53,7 +53,7 @@ test('deleting or reducing income cannot break an earlier balance', () => {
 });
 test('balance corrections appear in history but not spending or income', () => {
   const l = ledger(); l.act('opening', { amount: '200' }); l.act('adjust', { amount: '180' });
-  assert.equal(balance(l.state), 18000); const a = analytics(l.state, {}, MONDAY); assert.equal(a.spent, 0); assert.equal(a.income, 0); assert.equal(a.cash.at(-1).amount, 18000);
+  assert.equal(balance(l.state), 180000); const a = analytics(l.state, {}, MONDAY); assert.equal(a.spent, 0); assert.equal(a.income, 0); assert.equal(a.cash.at(-1).amount, 180000);
   assert.equal(history(l.state, { type: 'adjustment' }).total, 1); assert.throws(() => l.act('adjust', { amount: '180' }), /already/);
 });
 test('archives preserve history; unused category and subject deletion is allowed', () => {
@@ -87,8 +87,8 @@ test('Cairo calendar switches at local midnight and weeks run Sunday through Sat
 test('refunds count when returned, even if original expense was in previous week', () => {
   const l = ledger(); l.act('opening', { amount: '100' }, '2026-09-01T12:00:00.000Z'); const expense = l.act('expense', { amount: '20', categoryId: 'food' }, '2026-09-05T12:00:00.000Z');
   l.act('refund', { expenseId: expense.id, amount: '10' }, MONDAY);
-  const a = analytics(l.state, { period: 'week' }, MONDAY); assert.equal(a.gross, 0); assert.equal(a.refunds, 1000); assert.equal(a.spent, -1000); assert.equal(a.categories[0].amount, -1000); assert.equal(a.biggest, null);
-  assert.equal(a.cash[0].amount, 8000); assert.equal(a.cash.at(-1).amount, 9000);
+  const a = analytics(l.state, { period: 'week' }, MONDAY); assert.equal(a.gross, 0); assert.equal(a.refunds, 10000); assert.equal(a.spent, -10000); assert.equal(a.categories[0].amount, -10000); assert.equal(a.biggest, null);
+  assert.equal(a.cash[0].amount, 80000); assert.equal(a.cash.at(-1).amount, 90000);
 });
 test('history filters type, description, categories, subjects, and dates together', () => {
   const l = ledger(); l.act('opening', { amount: '100' }); l.act('expense', { amount: '10', categoryId: 'lessons', subjectId: 'chemistry', description: 'Organic revision' }); l.act('expense', { amount: '3', categoryId: 'food', description: 'Lunch' });
@@ -97,12 +97,12 @@ test('history filters type, description, categories, subjects, and dates togethe
 });
 test('long periods aggregate by month and carry prior balances across empty months', () => {
   const l = ledger(); l.act('opening', { amount: '100' }, '2026-01-01T12:00:00.000Z'); l.act('expense', { amount: '10', categoryId: 'food' }, MONDAY);
-  const a = analytics(l.state, { period: 'all' }, MONDAY); assert.equal(a.monthly, true); assert.equal(a.daily.length, 9); assert.equal(a.cash[3].amount, 10000); assert.equal(a.cash.at(-1).amount, 9000);
+  const a = analytics(l.state, { period: 'all' }, MONDAY); assert.equal(a.monthly, true); assert.equal(a.daily.length, 9); assert.equal(a.cash[3].amount, 100000); assert.equal(a.cash.at(-1).amount, 90000);
 });
 test('balance charts do not invent cash values before tracking began', () => {
   const l = ledger(); l.act('opening', { amount: '100' }, MONDAY);
   const a = analytics(l.state, { period: 'week' }, MONDAY);
-  assert.deepEqual(a.cash, [{ date: '2026-09-14', amount: 10000 }]);
+  assert.deepEqual(a.cash, [{ date: '2026-09-14', amount: 100000 }]);
   const past = analytics(l.state, { period: 'custom', from: '2026-09-01', to: '2026-09-10' }, MONDAY);
   assert.deepEqual(past.cash, []);
 });
@@ -115,19 +115,19 @@ test('state validation rejects orphaned refunds, duplicate IDs, missing opening,
 test('many exact decimal expenses never accumulate float rounding error', () => {
   const l = ledger(); l.act('opening', { amount: '10' });
   for (let i = 0; i < 100; i++) l.act('expense', { amount: '0.10', categoryId: 'food' });
-  assert.equal(balance(l.state), 0); assert.equal(analytics(l.state, {}, MONDAY).spent, 1000);
+  assert.equal(balance(l.state), 0); assert.equal(analytics(l.state, {}, MONDAY).spent, 10000);
 });
 test('opening sets currency; invalid codes rejected; currency can be relabelled later', () => {
   const l = ledger();
   assert.throws(() => l.act('opening', { amount: '100', currency: 'XX' }), /currency/i);
   l.act('opening', { amount: '100', currency: 'USD' });
   assert.equal(l.state.currency, 'USD');
-  assert.equal(balance(l.state), 10000);
+  assert.equal(balance(l.state), 100000);
   assert.throws(() => l.act('currency', { currency: 'XX' }), /currency/i);
   assert.throws(() => l.act('currency', { currency: 'USD' }), /already selected/);
   l.act('currency', { currency: 'EUR' });
   assert.equal(l.state.currency, 'EUR');
-  assert.equal(balance(l.state), 10000); // relabel only, amounts untouched
+  assert.equal(balance(l.state), 100000); // relabel only, amounts untouched
 });
 test('legacy states without currency default to EGP', () => {
   const l = ledger(); l.act('opening', { amount: '50' });
@@ -145,7 +145,7 @@ test('opening sets timezone; invalid zones rejected; timezone can change later',
   assert.throws(() => l.act('timezone', { timezone: 'America/New_York' }), /already selected/);
   l.act('timezone', { timezone: 'Europe/Paris' });
   assert.equal(l.state.timezone, 'Europe/Paris');
-  assert.equal(balance(l.state), 10000);
+  assert.equal(balance(l.state), 100000);
 });
 test('legacy states without timezone default to Africa/Cairo; day boundaries follow zone', () => {
   const l = ledger(); l.act('opening', { amount: '50' });

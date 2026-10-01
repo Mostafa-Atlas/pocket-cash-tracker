@@ -16,7 +16,7 @@ async function fixture(t, options = {}) {
   const url = `http://127.0.0.1:${server.address().port}`; let cookie = '';
   t.after(async () => { await new Promise(resolve => server.close(resolve)); app.close(); rmSync(directory, { recursive: true, force: true }); });
   async function request(path, body, extraHeaders = {}) {
-    const response = await fetch(url + '/api/' + path, { method: body === undefined ? 'GET' : 'POST', headers: { Cookie: cookie, ...(body === undefined ? {} : { 'Content-Type': 'application/json', 'X-Pocket-Request': '1' }), ...extraHeaders }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const response = await fetch(url + '/api/' + path, { method: body === undefined ? 'GET' : 'POST', headers: { Cookie: cookie, ...(body === undefined ? {} : { 'Content-Type': 'application/json', 'X-Pocket-Request': '1', 'X-Pocket-Format': '2' }), ...extraHeaders }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     if (response.headers.get('set-cookie')) cookie = response.headers.get('set-cookie').split(';')[0];
     return { response, body: await response.json() };
   }
@@ -41,10 +41,22 @@ test('HTTP transactions persist and stale simultaneous edits are blocked', async
   const { body: state } = await f.request('state');
   const results = await Promise.all([f.request('action/expense', { revision: state.revision, amount: '80', categoryId: 'food' }), f.request('action/expense', { revision: state.revision, amount: '80', categoryId: 'transport' })]);
   assert.deepEqual(results.map(r => r.response.status).sort(), [200, 409]);
-  assert.equal((await f.request('state')).body.balance, 2000);
+  assert.equal((await f.request('state')).body.balance, 20000);
   assert.equal((await f.act('expense', { amount: '21', categoryId: 'food' })).response.status, 400);
-  assert.equal((await f.request('state')).body.balance, 2000);
+  assert.equal((await f.request('state')).body.balance, 20000);
   const other = new Store(join(f.directory, 'data'), join(f.directory, 'backups')); assert.equal(other.state().transactions.length, 2); other.close();
+});
+test('save receipts are private, replay requests exactly once, and old browser formats cannot save', async t => {
+  const f = await fixture(t); await f.login(); await f.act('opening', { amount: '100' });
+  const input = { revision: 1, amount: '2', categoryId: 'food', requestId: 'http-save-receipt-00001' };
+  assert.equal((await f.request('action/expense', input, { 'X-Pocket-Format': '' })).response.status, 409);
+  assert.equal((await f.request('action/expense', input)).response.status, 200);
+  assert.equal((await f.request('action/expense', input)).response.status, 200);
+  assert.equal((await f.request('history')).body.rows.filter(t => t.type === 'expense').length, 1);
+  assert.equal((await f.request('request-status?id=' + input.requestId)).body.result.balance, 98000);
+  assert.equal((await f.request('request-status?id=bad')).response.status, 400);
+  await f.request('logout', {});
+  assert.equal((await f.request('request-status?id=' + input.requestId)).response.status, 401);
 });
 test('origin checks, custom request header, host checks, private routes, and CSP', async t => {
   const f = await fixture(t); await f.login();
@@ -63,7 +75,7 @@ test('manual download excludes credentials; restore saves recovery copy and rest
   const { body: before } = await f.request('state');
   assert.equal((await f.request('restore', { revision: before.revision, backup, confirmation: 'WRONG' })).response.status, 400);
   assert.equal((await f.request('restore', { revision: before.revision, backup, confirmation: 'RESTORE' })).response.status, 200);
-  assert.equal((await f.request('state')).body.balance, 12345);
+  assert.equal((await f.request('state')).body.balance, 123450);
   assert.ok((await f.request('backups')).body.items.some(b => b.kind === 'before-restore'));
   assert.equal((await f.request('backup/download?name=..%2Fdata%2Fpocket.sqlite')).response.status, 400);
 });
@@ -76,7 +88,7 @@ test('damaged, tampered, invalid, and stale backup restores leave ledger unchang
   invalid.checksum = createHash('sha256').update(JSON.stringify(invalid.data)).digest('hex');
   assert.equal((await f.request('restore', { backup: invalid, revision, confirmation: 'RESTORE' })).response.status, 400);
   assert.equal((await f.request('restore', { backup, revision: 0, confirmation: 'RESTORE' })).response.status, 409);
-  assert.equal((await f.request('state')).body.balance, 10000);
+  assert.equal((await f.request('state')).body.balance, 100000);
 });
 test('automatic backups catch up after downtime and retain eight weekly files plus manual files', t => {
   const directory = mkdtempSync(join(tmpdir(), 'pocket-backup-tests-')); let now = Date.now();
@@ -94,6 +106,6 @@ test('restoration and restart preserve the configured PIN while PIN recovery inv
   store.update('opening', { revision: 0, amount: '50' }); const session = store.session(); store.close();
   store = new Store(join(directory, 'data'), join(directory, 'backups'));
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
-  assert.equal(store.checkPin(PIN), true); assert.equal(store.authenticated(session.token), true); assert.equal(store.state().transactions[0].amount, 5000);
+  assert.equal(store.checkPin(PIN), true); assert.equal(store.authenticated(session.token), true); assert.equal(store.state().transactions[0].amount, 50000);
   store.setPin('12345678'); assert.equal(store.authenticated(session.token), false); assert.equal(store.checkPin(PIN), false); assert.equal(store.checkPin('12345678'), true);
 });
