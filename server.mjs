@@ -4,7 +4,8 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { networkInterfaces } from 'node:os';
 import { Store, SESSION_DURATION } from './lib/store.mjs';
-import { UserError, fail, balance, analytics, history, dateKey } from './lib/ledger.mjs';
+import { UserError, fail, balance, analytics, history, dateKey, monthlyBudgets, validDate } from './lib/ledger.mjs';
+import { historyCsv } from './lib/export.mjs';
 import { transactionTime } from './public/domain.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -13,6 +14,7 @@ const staticFiles = new Map([
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/domain.js', ['domain.js', 'text/javascript; charset=utf-8']],
   ['/connection.js', ['connection.js', 'text/javascript; charset=utf-8']],
+  ['/theme.js', ['theme.js', 'text/javascript; charset=utf-8']],
   ['/style.css', ['style.css', 'text/css; charset=utf-8']],
   ['/icon.svg', ['icon.svg', 'image/svg+xml']],
   ['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json']]
@@ -70,10 +72,19 @@ export function createApp({ dataDir = join(root, 'data'), backupDir = join(root,
       if (url.pathname === '/api/logout' && req.method === 'POST') { store.logout(cookie(req)); res.setHeader('Set-Cookie', 'pocket_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); json(200, { ok: true }); return; }
       const filters = Object.fromEntries(url.searchParams);
       if (url.pathname === '/api/state' && req.method === 'GET') {
-        const state = store.state(); json(200, { revision: state.revision, initialized: state.initialized, currency: state.currency || 'EGP', balance: balance(state), categories: state.categories, subjects: state.subjects, openingDate: state.transactions[0] ? dateKey(transactionTime(state.transactions[0]), state.timezone || 'Africa/Cairo') : null, today: dateKey(new Date(clock()).toISOString(), state.timezone || 'Africa/Cairo'), timezone: state.timezone || 'Africa/Cairo' }); return;
+        const state = store.state(); json(200, { revision: state.revision, initialized: state.initialized, currency: state.currency || 'EGP', balance: balance(state), categories: state.categories, subjects: state.subjects, budgets: state.budgets || { overall: null, categories: {} }, openingDate: state.transactions[0] ? dateKey(transactionTime(state.transactions[0]), state.timezone || 'Africa/Cairo') : null, today: dateKey(new Date(clock()).toISOString(), state.timezone || 'Africa/Cairo'), timezone: state.timezone || 'Africa/Cairo' }); return;
       }
       if (url.pathname === '/api/analytics' && req.method === 'GET') { const s = store.state(); json(200, analytics(s, filters, new Date(clock()).toISOString(), s.timezone || 'Africa/Cairo')); return; }
       if (url.pathname === '/api/history' && req.method === 'GET') { const s = store.state(); json(200, history(s, filters, s.timezone || 'Africa/Cairo')); return; }
+      if (url.pathname === '/api/budgets' && req.method === 'GET') { json(200, monthlyBudgets(store.state(), new Date(clock()).toISOString())); return; }
+      if (url.pathname === '/api/history/export' && req.method === 'GET') {
+        fail(!filters.from || validDate(filters.from), 'Choose a valid start date.');
+        fail(!filters.to || validDate(filters.to), 'Choose a valid end date.');
+        fail(!filters.from || !filters.to || filters.from <= filters.to, 'Start date must be before the end date.');
+        const s = store.state(), csv = historyCsv(s, filters);
+        res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="pocket-history-${dateKey(new Date(clock()).toISOString(), s.timezone || 'Africa/Cairo')}.csv"` });
+        res.end(csv); return;
+      }
       if (url.pathname === '/api/backups' && req.method === 'GET') { json(200, store.backupStatus()); return; }
       if (url.pathname === '/api/request-status' && req.method === 'GET') { json(200, { result: store.receipt(filters.id) }); return; }
       if (url.pathname === '/api/backup/download' && req.method === 'GET') {

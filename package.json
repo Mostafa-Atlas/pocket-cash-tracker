@@ -27,7 +27,7 @@
     "start": "node server.mjs",
     "set-pin": "node scripts/set-pin.mjs",
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check server.mjs && node --check lib/ledger.mjs && node --check lib/store.mjs && node --check public/app.js && node --check public/domain.js && node --check public/connection.js",
+    "check": "node --check server.mjs && node --check lib/ledger.mjs && node --check lib/store.mjs && node --check public/app.js && node --check public/domain.js && node --check public/connection.js && node --check lib/export.mjs && node --check public/theme.js",
     "preview": "node scripts/ui-preview.mjs",
     "test:browser": "playwright test"
   },

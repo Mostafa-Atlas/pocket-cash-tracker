@@ -11,9 +11,9 @@ A private physical-cash tracker for PC and mobile. Your currency, your timezone,
 
 ## Screenshots
 
-Fresh captures of the current app, taken on 1 October 2026 with disposable sample data.
+Fresh captures of the current app, taken on 1 October 2026 on desktop and a 390 × 844 phone viewport with disposable sample data.
 
-**Desktop overview** — cash in hand, weekly totals, categories, and recent activity, including a backdated expense.
+**Desktop overview** — cash in hand, weekly totals, monthly budget progress (including a category over target), and recent activity.
 
 ![Home — desktop overview with sample cash and activity](docs/screenshots/home-desktop.jpg)
 
@@ -21,7 +21,11 @@ Fresh captures of the current app, taken on 1 October 2026 with disposable sampl
 
 ![Analysis — desktop spending charts with sample data](docs/screenshots/analysis-desktop.jpg)
 
-**On your phone** — the overview and expense sheet with a chosen transaction date.
+**Light theme** — the same overview with the saved light appearance.
+
+![Home — monthly budgets and spending in the light theme](docs/screenshots/home-light.jpg)
+
+**On your phone** — the overview and expense sheet with Yesterday selected.
 
 <p>
   <img src="docs/screenshots/home-mobile.jpg" alt="Mobile home with cash balance, weekly totals, and bottom navigation" width="280">
@@ -29,9 +33,9 @@ Fresh captures of the current app, taken on 1 October 2026 with disposable sampl
 </p>
 
 <details>
-<summary>Settings and verified backup status</summary>
+<summary>Budget settings, appearance, and verified backup status</summary>
 
-Categories, tracking start date, currency, timezone, and local/secondary backup status. The secondary destination shown here belongs to the disposable preview.
+Monthly budget targets, categories, tracking start date, currency, timezone, theme preference, and local/secondary backup status. The secondary destination shown here belongs to the disposable preview.
 
 ![Settings — desktop preferences and verified sample backups](docs/screenshots/settings-desktop.jpg)
 
@@ -45,9 +49,11 @@ See [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md) for the capture setup.
 - Choose your currency at first launch; currency-specific input precision (whole yen, two decimals for EGP/USD, three for dinars); relabel later without silently rounding history
 - Choose your timezone at first launch (auto-detected from your device); day, week and month boundaries follow it, changeable later in Settings
 - Analysis: net spent, refunds, largest category, category breakdown, daily spending, balance over time, lesson subjects
-- History: search + filters (date, category, subject, type), edit / delete / refund with revision-conflict protection
+- History: search + filters (date, category, subject, type), edit / delete / refund with revision-conflict protection; CSV export of every matching transaction
 - Transaction dates: Today, Yesterday, or a chosen date; corrections preserve the original recording timestamp; balance corrections are visible adjustments excluded from spending totals
 - Refunds link to an expense, can be partial, never exceed the expense; counted on return date
+- Monthly overall and category budget targets, progress bars, remaining amounts, and clear overspending status; targets repeat each month
+- Light/dark theme toggle with a saved preference per browser and synchronized tabs
 - Categories / lesson subjects: add, rename, archive, delete-only-when-unused
 - PIN auth (salted scrypt hash), 24h HttpOnly SameSite sessions, rate-limited login, same-origin + custom-header mutation guard
 - Backups: verified weekly (keep 8), manual snapshots, optional secondary destination, visible backup health, download/upload JSON, validated restore with recovery copy
@@ -58,7 +64,7 @@ See [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md) for the capture setup.
 - **Runtime:** Node.js 24+ (uses built-in `node:http`, `node:sqlite`, `node:crypto`, `node:test` — that's why Node 24 is required)
 - **Frontend:** plain HTML / CSS / JavaScript + inline SVG charts, no CDN, no frameworks
 - **Storage:** SQLite locally (`data/pocket.sqlite`), money as integer thousandths, with currency-specific input precision, atomic mutations, chronological non-negative ledger validation
-- **Tests:** 42 Node tests for ledger/server/recovery behavior; a Playwright suite runs browser scenarios on desktop and phone-sized Chromium layouts. Playwright is a development dependency only.
+- **Tests:** 50 Node tests for ledger/server/recovery, budgets, and CSV behavior; 30 Playwright scenarios run on desktop and phone-sized Chromium layouts. Playwright is a development dependency only.
 
 ## Architecture
 
@@ -149,7 +155,7 @@ The PC must stay awake and the server must stay running. By default, Pocket list
 
 ## Use
 
-Home gives you cash in hand, Add Expense, Add Money, a period summary, categories, and recent activity. Analysis contains the full set of graphs. History supports search and filters; open a record to edit, delete, or refund it. Settings manages categories/subjects, balance corrections, lock, and backups.
+Home gives you cash in hand, Add Expense, Add Money, a period summary, categories, and recent activity. Analysis contains the full set of graphs. History supports search and filters; open a record to edit, delete, or refund it. Settings manages monthly budgets, categories/subjects, balance corrections, theme, lock, and backups.
 
 Expense/income/refund corrections preserve their original recording timestamps. Their transaction dates can be corrected separately; History and Analysis use the transaction date. Balance corrections create new visible adjustments. An operation that would create a negative balance anywhere in the ledger is rejected. Remove dependent refunds before deleting their expense. Refunds count on the date returned, so a period can have negative net spending if it contains refunds for older purchases. Category and subject labels follow renames; archived items retain their historical association.
 
@@ -167,7 +173,7 @@ After a lost response, use **Check / retry save**. Pocket checks the server rece
 
 Stop Pocket and refresh or close existing browser tabs before launching this version. The first launch upgrades the old integer-hundredths ledger to integer-thousandths exactly, retaining the PIN, sessions, descriptions, and timestamps. A `before-upgrade` JSON recovery snapshot preserves the original ledger before the conversion. The live database is not converted just by installing or pulling the code. Older browser code is rejected when it tries to save; refresh to load the new format.
 
-Old JSON backups remain restorable and are converted during restoration. Existing fractional legacy JPY records remain visible exactly. New JPY entries require whole yen. Currency relabeling is blocked if existing amounts would require more decimals than the new currency supports. Currency relabeling does not perform exchange-rate conversion.
+Old JSON backups remain restorable and are converted during restoration. Existing fractional legacy JPY records remain visible exactly. New JPY entries require whole yen. Currency relabeling is blocked if existing amounts or budget targets would require more decimals than the new currency supports. Currency relabeling does not perform exchange-rate conversion.
 
 ## Backups and restore
 
@@ -175,11 +181,31 @@ Live data is in `data/pocket.sqlite` (with SQLite WAL companions while running).
 
 Portable JSON snapshots are in `backups/`. Automatic snapshots run every seven days, starting with the first server launch. The latest eight weekly snapshots are retained. An overdue backup runs on the next launch. Manual and pre-restore recovery snapshots are retained separately.
 
-Use Settings → Create manual backup → Download to save a copy elsewhere. Backups in the same PC/folder are useful for restoring edits; a downloaded copy on another device also survives PC loss. Backups contain financial data, not the PIN or sessions.
+Use Settings → Create manual backup → Download to save a copy elsewhere. Backups in the same PC/folder are useful for restoring edits; a downloaded copy on another device also survives PC loss. Backups contain financial records and budget targets, not the PIN, device sessions, or browser theme preference.
 
 To restore, choose a saved snapshot or upload a downloaded JSON file in Settings, then type RESTORE. The file checksum and complete ledger are validated before anything changes. A recovery snapshot is written before replacing data. The PIN stays unchanged.
 
 The `data/`, `backups/`, `.test-data/`, and `artifacts/` directories are ignored by Git. They are not included when you clone the repository. Never commit your live database, downloaded financial backups, or credentials.
+
+## CSV export
+
+Open **History**, apply any search, type, category, subject, or date filters, then choose **Export CSV**. The download includes every matching transaction, including records beyond the first page, newest first. Apply changed filters before exporting; Reset exports the full ledger.
+
+Columns include the record ID, transaction date in your timezone, effective and original recording timestamps (UTC), transaction type, signed cash amount, currency, category, subject, description, linked expense ID, historical balance after the record, and timezone. Expenses use negative amounts; income, opening cash, and refunds use positive amounts. Corrections use their signed cash difference. Money has no thousands separators, and dinar precision is preserved.
+
+CSV uses UTF-8 with a byte-order mark for Excel, quoted fields, and standard line endings. Descriptions and category/subject names that look like spreadsheet formulas receive an apostrophe prefix. This is an analysis export, not a restorable backup; keep using JSON snapshots for recovery. CSV import is still planned.
+
+## Monthly budgets
+
+In **Settings → Monthly budgets**, set an overall spending target, category targets, or both. Home shows the current calendar month's progress, remaining amount, and any amount over target, regardless of the period selected for the other charts.
+
+Targets repeat each month in your configured timezone. Spending is expenses minus refunds received during that month; opening cash, income, and balance adjustments are excluded. A refund for an older expense counts in its return month. Refund-only periods can have negative net spending; the bar stops at zero while the remaining amount reflects the returned cash.
+
+Targets guide spending without blocking entries above the target. Changing a target updates current progress immediately; leave its amount empty and save to remove it. Overall and category targets are independent. Archived categories keep existing targets, and deleting an unused category removes its target. Targets are saved in SQLite and included in JSON backups. Older ledgers and backups start with no targets; restoring one removes newer targets along with replacing the ledger.
+
+## Appearance
+
+Use the sun/moon button in the header or **Settings → Theme** to switch between light and dark. Dark remains the initial theme. Your choice is saved in this browser, applied before the page renders, and synchronized across its open tabs. Other devices choose their own theme. If browser storage is blocked, switching still works for the current page. Theme preferences are separate from financial backups.
 
 ## Secondary backups
 
@@ -230,7 +256,7 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-Each browser test creates an isolated temporary ledger and server; production data is never opened. The suite exercises navigation, backdated entries, currency previews, keyboard focus, draft recovery, session expiry, stale revisions, lost responses, restores, and desktop/phone layouts. CI runs both Node and browser tests. These are simulated phone viewports; physical phone/Tailnet connectivity still requires device testing.
+Each browser test creates an isolated temporary ledger and server; production data is never opened. The suite exercises filtered CSV downloads, budget progress and recovery, theme persistence and tab synchronization, navigation, backdated entries, currency previews, keyboard focus, draft recovery, session expiry, stale revisions, lost responses, restores, and desktop/phone layouts. CI runs both Node and browser tests. These are simulated phone viewports; physical phone/Tailnet connectivity still requires device testing.
 
 Implementation uses Node's built-in HTTP, SQLite, crypto, and test modules, with plain HTML/CSS/JavaScript and SVG. The SQLite module may print an experimental-feature warning in Node 24; it does not prevent startup. Everything needed by the frontend is local, without CDN or font downloads.
 
@@ -240,9 +266,10 @@ Physical phone connectivity requires verification from the phone. Windows/Tailne
 
 - [x] Screenshots in README
 - [ ] Demo GIF
-- [ ] CSV export / import
-- [ ] Monthly budget targets with progress bar
-- [ ] Light theme toggle
+- [x] CSV export
+- [ ] CSV import with preview and duplicate detection
+- [x] Monthly budget targets with progress bar
+- [x] Light theme toggle
 - [ ] Docker image for one-command self-host
 
 Contributions welcome — open an issue first to discuss scope. No external services or tracking will be accepted.
